@@ -1,0 +1,10 @@
+name: ct-platform-infra
+description: CodersTrust Platform Infra
+config:
+  pulumi:tags:
+    value:
+      pulumi:template: aws-typescript
+runtime: 
+  name: nodejs
+  options:
+    nodeargs: "--import ./register.js"
