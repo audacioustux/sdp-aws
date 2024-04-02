@@ -231,6 +231,33 @@ const cilium = new k8s.helm.v3.Release(ciliumChartName, {
     },
 }, { provider: k8sProvider, dependsOn: [gatewayAPIController, awsNodeDaemonSetPatch] });
 
+const karpenterChartName = "karpenter";
+const karpenter = new k8s.helm.v3.Release(karpenterChartName, {
+    chart: karpenterChartName,
+    namespace: "kube-system",
+    repositoryOpts: {
+        repo: "oci://public.ecr.aws/karpenter/karpenter",
+    },
+    values: {
+        settings: {
+            clusterName: clusterName,
+            interruptionQueue: clusterName,
+        },
+        controller: {
+            resources: {
+                requests: {
+                    cpu: "0.5",
+                    memory: "1Gi",
+                },
+                limits: {
+                    cpu: "1",
+                    memory: "2Gi",
+                },
+            },
+        },
+    },
+}, { provider: k8sProvider });
+
 const coreDNSAddonName = "coredns";
 const coreDNSAddon = new aws.eks.Addon(coreDNSAddonName, {
     addonName: coreDNSAddonName,
