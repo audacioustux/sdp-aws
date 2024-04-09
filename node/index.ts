@@ -125,8 +125,26 @@ const kmsKey = new aws.kms.Key(kmsKeyName, {
   }
 })
 
-const clusterVersion = '1.29'
 const clusterName = `${project}-${env}-eks`
+
+const karpenterNodeRoleName = `${clusterName}-karpenter-node-role`
+const karpenterNodeRole = new aws.iam.Role(karpenterNodeRoleName, {
+  assumeRolePolicy: aws.iam.assumeRolePolicyForPrincipal({
+    Service: 'ec2.amazonaws.com',
+  }),
+  path: '/',
+  managedPolicyArns: [
+    'arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy',
+    'arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy',
+    'arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly',
+    'arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore'
+  ],
+  tags: {
+    Name: karpenterNodeRoleName,
+    Project: project
+  }
+})
+const clusterVersion = '1.29'
 const cluster = new eks.Cluster(clusterName, {
   name: clusterName,
   version: clusterVersion,
@@ -147,13 +165,19 @@ const cluster = new eks.Cluster(clusterName, {
       }
     }
   },
+  roleMappings: [
+    {
+      roleArn: karpenterNodeRole.arn,
+      username: 'system:node:{{EC2PrivateDNSName}}',
+      groups: ['system:bootstrappers', 'system:nodes']
+    }
+  ],
   tags: {
     Name: clusterName,
     Project: project,
     'karpenter.sh/discovery': clusterName
   }
 })
-export const kubeconfig = cluster.kubeconfig
 
 const k8sProvider = new k8s.Provider(clusterName, {
   kubeconfig: cluster.kubeconfigJson,
@@ -284,41 +308,17 @@ const ebsCsiAddon = new aws.eks.Addon(csiDriverAddonName, {
   resolveConflictsOnCreate: 'OVERWRITE'
 }, { dependsOn: [cilium] })
 
-// KarpenterNodeRole:
-//   Type: "AWS::IAM::Role"
-//   Properties:
-//     RoleName: !Sub "KarpenterNodeRole-${ClusterName}"
-//     Path: /
-//     AssumeRolePolicyDocument:
-//       Version: "2012-10-17"
-//       Statement:
-//         - Effect: Allow
-//           Principal:
-//             Service:
-//               !Sub "ec2.${AWS::URLSuffix}"
-//           Action:
-//             - "sts:AssumeRole"
-//     ManagedPolicyArns:
-//       - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonEKS_CNI_Policy"
-//       - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonEKSWorkerNodePolicy"
-//       - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
-//       - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"
-const karpenterNodeRoleName = `${clusterName}-karpenter-node-role`
-const karpenterNodeRole = new aws.iam.Role(karpenterNodeRoleName, {
-  assumeRolePolicy: aws.iam.assumeRolePolicyForPrincipal({
-    Service: 'ec2.amazonaws.com'
-  }),
-  managedPolicyArns: [
-    'arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy',
-    'arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy',
-    'arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly',
-    'arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore'
-  ],
-  tags: {
-    Name: karpenterNodeRoleName,
-    Project: project
-  }
-})
+const podIdentityAgentAddonName = 'eks-pod-identity-agent'
+const podIdentityAgentAddon = new aws.eks.Addon(podIdentityAgentAddonName, {
+  addonName: podIdentityAgentAddonName,
+  clusterName: cluster.eksCluster.name,
+  addonVersion: (await aws.eks.getAddonVersion({
+    addonName: podIdentityAgentAddonName,
+    kubernetesVersion: clusterVersion,
+    mostRecent: true
+  })).version,
+  resolveConflictsOnCreate: 'OVERWRITE'
+}, { dependsOn: [cilium] })
 
 const karpenterInterruptionQueueName = `${clusterName}-karpenter-interruption-queue`
 const karpenterInterruptionQueue = new aws.sqs.Queue(karpenterInterruptionQueueName, {
@@ -331,13 +331,99 @@ const karpenterInterruptionQueue = new aws.sqs.Queue(karpenterInterruptionQueueN
   }
 })
 
+const karpenterInterruptionQueuePolicyName = `${clusterName}-karpenter-interruption-queue-policy`
+const KarpenterInterruptionQueuePolicy = new aws.sqs.QueuePolicy(karpenterInterruptionQueuePolicyName, {
+  queueUrl: karpenterInterruptionQueue.id,
+  policy: {
+    Version: '2012-10-17',
+    Statement: [
+      {
+        Effect: 'Allow',
+        Principal: {
+          Service: ['events.amazonaws.com', 'sqs.amazonaws.com']
+        },
+        Action: 'sqs:SendMessage',
+        Resource: karpenterInterruptionQueue.arn
+      }
+    ]
+  },
+})
+
+const scheduledChangeRuleName = `${clusterName}-scheduled-change-rule`
+const scheduledChangeRule = new aws.cloudwatch.EventRule(scheduledChangeRuleName, {
+  name: scheduledChangeRuleName,
+  eventPattern: JSON.stringify({
+    source: ['aws.health'],
+    'detail-type': ['AWS Health Event']
+  }),
+  tags: {
+    Name: scheduledChangeRuleName,
+    Project: project
+  }
+})
+const scheduledChangeTarget = new aws.cloudwatch.EventTarget(scheduledChangeRuleName, {
+  rule: scheduledChangeRule.name,
+  arn: karpenterInterruptionQueue.arn,
+})
+
+const spotInterruptionRuleName = `${clusterName}-spot-interruption-rule`
+const spotInterruptionRule = new aws.cloudwatch.EventRule(spotInterruptionRuleName, {
+  name: spotInterruptionRuleName,
+  eventPattern: JSON.stringify({
+    source: ['aws.ec2'],
+    'detail-type': ['EC2 Spot Instance Interruption Warning']
+  }),
+  tags: {
+    Name: spotInterruptionRuleName,
+    Project: project
+  }
+})
+const spotInterruptionTarget = new aws.cloudwatch.EventTarget(spotInterruptionRuleName, {
+  rule: spotInterruptionRule.name,
+  arn: karpenterInterruptionQueue.arn,
+})
+
+const rebalanceRuleName = `${clusterName}-rebalance-rule`
+const rebalanceRule = new aws.cloudwatch.EventRule(rebalanceRuleName, {
+  name: rebalanceRuleName,
+  eventPattern: JSON.stringify({
+    source: ['aws.ec2'],
+    'detail-type': ['EC2 Instance Rebalance Recommendation']
+  }),
+  tags: {
+    Name: rebalanceRuleName,
+    Project: project
+  }
+})
+const rebalanceTarget = new aws.cloudwatch.EventTarget(rebalanceRuleName, {
+  rule: rebalanceRule.name,
+  arn: karpenterInterruptionQueue.arn,
+})
+
+const instanceStateChangeRuleName = `${clusterName}-instance-state-change-rule`
+const instanceStateChangeRule = new aws.cloudwatch.EventRule(instanceStateChangeRuleName, {
+  name: instanceStateChangeRuleName,
+  eventPattern: JSON.stringify({
+    source: ['aws.ec2'],
+    'detail-type': ['EC2 Instance State-change Notification']
+  }),
+  tags: {
+    Name: instanceStateChangeRuleName,
+    Project: project
+  }
+})
+const instanceStateChangeTarget = new aws.cloudwatch.EventTarget(instanceStateChangeRuleName, {
+  rule: instanceStateChangeRule.name,
+  arn: karpenterInterruptionQueue.arn,
+})
+
 const partitionId = await aws.getPartition().then(partition => partition.id)
 const regionId = await aws.getRegion().then(region => region.id)
 const accountId = await aws.getCallerIdentity().then(identity => identity.accountId)
 
 const karpenterControllerPolicyName = `${clusterName}-karpenter-controller-policy`
 const KarpenterControllerPolicy = new aws.iam.Policy(karpenterControllerPolicyName, {
-  policy: await aws.iam.getPolicyDocument({
+  policy: aws.iam.getPolicyDocumentOutput({
     statements: [
       {
         sid: 'AllowScopedEC2InstanceAccessActions',
@@ -639,95 +725,71 @@ const KarpenterControllerPolicy = new aws.iam.Policy(karpenterControllerPolicyNa
         actions: ['eks:DescribeCluster']
       }
     ]
-  }).then(policy => policy.json),
+  }).json,
   tags: {
     Name: karpenterControllerPolicyName,
     Project: project
   }
 })
-
-const karpenterInterruptionQueuePolicyName = `${clusterName}-karpenter-interruption-queue-policy`
-const KarpenterInterruptionQueuePolicy = new aws.sqs.QueuePolicy(karpenterInterruptionQueuePolicyName, {
-  queueUrl: karpenterInterruptionQueue.id,
-  policy: {
-    Version: '2012-10-17',
-    Statement: [
-      {
-        Effect: 'Allow',
-        Principal: {
-          Service: ['events.amazonaws.com', 'sqs.amazonaws.com']
+const karpenterControllerRoleName = `${clusterName}-karpenter-controller-role`
+const karpenterControllerRole = new aws.iam.Role(karpenterControllerRoleName, {
+  assumeRolePolicy: {
+    Version: "2012-10-17",
+    Statement: [{
+      Action: [
+        "sts:AssumeRole",
+        "sts:TagSession"
+      ],
+      Effect: "Allow",
+      Principal: {
+        Service: "pods.eks.amazonaws.com",
+      },
+    }],
+  },
+  tags: {
+    Name: karpenterControllerRoleName,
+    Project: project
+  }
+})
+const karpenterControllerRolePolicyAttachment = new aws.iam.RolePolicyAttachment(`${karpenterControllerRoleName}-attachment`, {
+  policyArn: KarpenterControllerPolicy.arn,
+  role: karpenterControllerRole
+})
+const karpenterChartName = "karpenter";
+const karpenterNamespace = "kube-system";
+const karpenter = new k8s.helm.v3.Release(karpenterChartName, {
+  chart: "oci://public.ecr.aws/karpenter/karpenter",
+  name: karpenterChartName,
+  namespace: karpenterNamespace,
+  values: {
+    settings: {
+      clusterName: cluster.eksCluster.name,
+      // interruptionQueue: karpenterInterruptionQueue.name,
+    },
+    controller: {
+      resources: {
+        requests: {
+          cpu: "0.5",
+          memory: "1Gi",
         },
-        Action: 'sqs:SendMessage',
-        Resource: karpenterInterruptionQueue.arn
-      }
-    ]
-  }
-})
-
-const scheduledChangeRuleName = `${clusterName}-scheduled-change-rule`
-const scheduledChangeRule = new aws.cloudwatch.EventRule(scheduledChangeRuleName, {
-  name: scheduledChangeRuleName,
-  eventPattern: JSON.stringify({
-    source: ['aws.health'],
-    'detail-type': ['AWS Health Event']
-  }),
+        limits: {
+          cpu: "1",
+          memory: "2Gi",
+        },
+      },
+    },
+  },
+}, { provider: k8sProvider });
+const podIdentityAssociationName = `${clusterName}-karpenter-pod-identity-association`
+const podIdentityAssociation = new aws.eks.PodIdentityAssociation(podIdentityAssociationName, {
+  clusterName: cluster.eksCluster.name,
+  namespace: karpenterNamespace,
+  serviceAccount: 'karpenter',
+  roleArn: karpenterControllerRole.arn,
   tags: {
-    Name: scheduledChangeRuleName,
+    Name: podIdentityAssociationName,
     Project: project
   }
 })
-const scheduledChangeTarget = new aws.cloudwatch.EventTarget(scheduledChangeRuleName, {
-  rule: scheduledChangeRule.name,
-  arn: karpenterInterruptionQueue.arn,
-})
 
-const spotInterruptionRuleName = `${clusterName}-spot-interruption-rule`
-const spotInterruptionRule = new aws.cloudwatch.EventRule(spotInterruptionRuleName, {
-  name: spotInterruptionRuleName,
-  eventPattern: JSON.stringify({
-    source: ['aws.ec2'],
-    'detail-type': ['EC2 Spot Instance Interruption Warning']
-  }),
-  tags: {
-    Name: spotInterruptionRuleName,
-    Project: project
-  }
-})
-const spotInterruptionTarget = new aws.cloudwatch.EventTarget(spotInterruptionRuleName, {
-  rule: spotInterruptionRule.name,
-  arn: karpenterInterruptionQueue.arn,
-})
-
-const rebalanceRuleName = `${clusterName}-rebalance-rule`
-const rebalanceRule = new aws.cloudwatch.EventRule(rebalanceRuleName, {
-  name: rebalanceRuleName,
-  eventPattern: JSON.stringify({
-    source: ['aws.ec2'],
-    'detail-type': ['EC2 Instance Rebalance Recommendation']
-  }),
-  tags: {
-    Name: rebalanceRuleName,
-    Project: project
-  }
-})
-const rebalanceTarget = new aws.cloudwatch.EventTarget(rebalanceRuleName, {
-  rule: rebalanceRule.name,
-  arn: karpenterInterruptionQueue.arn,
-})
-
-const instanceStateChangeRuleName = `${clusterName}-instance-state-change-rule`
-const instanceStateChangeRule = new aws.cloudwatch.EventRule(instanceStateChangeRuleName, {
-  name: instanceStateChangeRuleName,
-  eventPattern: JSON.stringify({
-    source: ['aws.ec2'],
-    'detail-type': ['EC2 Instance State-change Notification']
-  }),
-  tags: {
-    Name: instanceStateChangeRuleName,
-    Project: project
-  }
-})
-const instanceStateChangeTarget = new aws.cloudwatch.EventTarget(instanceStateChangeRuleName, {
-  rule: instanceStateChangeRule.name,
-  arn: karpenterInterruptionQueue.arn,
-})
+export const kubeconfig = cluster.kubeconfig
