@@ -7,6 +7,8 @@ const config = new pulumi.Config()
 const project = config.require('project')
 const env = config.require('env')
 
+const eksClusterName = `${project}-${env}-eks`
+
 const vpcName = `${project}-${env}-vpc`
 const vpc = new aws.ec2.Vpc(vpcName, {
   cidrBlock: '10.0.0.0/16',
@@ -41,7 +43,8 @@ const privateSubnets = availabilityZones.names.map((az, index) => {
     mapPublicIpOnLaunch: false,
     tags: {
       Name: subnetName,
-      Project: project
+      Project: project,
+      "karpenter.sh/discovery": eksClusterName
     }
   })
 })
@@ -125,9 +128,7 @@ const kmsKey = new aws.kms.Key(kmsKeyName, {
   }
 })
 
-const clusterName = `${project}-${env}-eks`
-
-const karpenterNodeRoleName = `${clusterName}-karpenter-node-role`
+const karpenterNodeRoleName = `${eksClusterName}-karpenter-node-role`
 const karpenterNodeRole = new aws.iam.Role(karpenterNodeRoleName, {
   assumeRolePolicy: aws.iam.assumeRolePolicyForPrincipal({
     Service: 'ec2.amazonaws.com',
@@ -145,8 +146,8 @@ const karpenterNodeRole = new aws.iam.Role(karpenterNodeRoleName, {
   }
 })
 const clusterVersion = '1.29'
-const cluster = new eks.Cluster(clusterName, {
-  name: clusterName,
+const cluster = new eks.Cluster(eksClusterName, {
+  name: eksClusterName,
   version: clusterVersion,
   vpcId: vpc.id,
   createOidcProvider: true,
@@ -155,9 +156,8 @@ const cluster = new eks.Cluster(clusterName, {
   encryptionConfigKeyArn: kmsKey.arn,
   nodeAssociatePublicIpAddress: false,
   defaultAddonsToRemove: ['kube-proxy'],
+  skipDefaultNodeGroup: true,
   nodeGroupOptions: {
-    instanceType: 'm7g.large',
-    desiredCapacity: 1,
     taints: {
       'node.cilium.io/agent-not-ready': {
         value: 'true',
@@ -173,13 +173,30 @@ const cluster = new eks.Cluster(clusterName, {
     }
   ],
   tags: {
-    Name: clusterName,
+    Name: eksClusterName,
     Project: project,
-    'karpenter.sh/discovery': clusterName
+    'karpenter.sh/discovery': eksClusterName
+  }
+})
+const defaultNodeGroupName = `${eksClusterName}-default`
+const defaultNodeGroup = new eks.ManagedNodeGroup(defaultNodeGroupName, {
+  cluster,
+  instanceTypes: ['m7g.medium'],
+  capacityType: 'SPOT',
+  amiType: 'BOTTLEROCKET_ARM_64',
+  nodeRole: cluster.instanceRoles[0],
+  scalingConfig: {
+    minSize: 0,
+    maxSize: 5,
+    desiredSize: 2
+  },
+  tags: {
+    Name: defaultNodeGroupName,
+    Project: project,
   }
 })
 
-const k8sProvider = new k8s.Provider(clusterName, {
+const k8sProvider = new k8s.Provider(eksClusterName, {
   kubeconfig: cluster.kubeconfigJson,
   enableServerSideApply: true
 })
@@ -239,9 +256,6 @@ const cilium = new k8s.helm.v3.Release(ciliumChartName, {
     },
     gatewayAPI: {
       enabled: true
-    },
-    operator: {
-      replicas: 1
     },
     routingMode: 'native',
     bpf: {
@@ -320,7 +334,7 @@ const podIdentityAgentAddon = new aws.eks.Addon(podIdentityAgentAddonName, {
   resolveConflictsOnCreate: 'OVERWRITE'
 }, { dependsOn: [cilium] })
 
-const karpenterInterruptionQueueName = `${clusterName}-karpenter-interruption-queue`
+const karpenterInterruptionQueueName = `${eksClusterName}-karpenter-interruption-queue`
 const karpenterInterruptionQueue = new aws.sqs.Queue(karpenterInterruptionQueueName, {
   name: karpenterInterruptionQueueName,
   messageRetentionSeconds: 300,
@@ -331,7 +345,7 @@ const karpenterInterruptionQueue = new aws.sqs.Queue(karpenterInterruptionQueueN
   }
 })
 
-const karpenterInterruptionQueuePolicyName = `${clusterName}-karpenter-interruption-queue-policy`
+const karpenterInterruptionQueuePolicyName = `${eksClusterName}-karpenter-interruption-queue-policy`
 const KarpenterInterruptionQueuePolicy = new aws.sqs.QueuePolicy(karpenterInterruptionQueuePolicyName, {
   queueUrl: karpenterInterruptionQueue.id,
   policy: {
@@ -349,7 +363,7 @@ const KarpenterInterruptionQueuePolicy = new aws.sqs.QueuePolicy(karpenterInterr
   },
 })
 
-const scheduledChangeRuleName = `${clusterName}-scheduled-change-rule`
+const scheduledChangeRuleName = `${eksClusterName}-scheduled-change-rule`
 const scheduledChangeRule = new aws.cloudwatch.EventRule(scheduledChangeRuleName, {
   name: scheduledChangeRuleName,
   eventPattern: JSON.stringify({
@@ -366,7 +380,7 @@ const scheduledChangeTarget = new aws.cloudwatch.EventTarget(scheduledChangeRule
   arn: karpenterInterruptionQueue.arn,
 })
 
-const spotInterruptionRuleName = `${clusterName}-spot-interruption-rule`
+const spotInterruptionRuleName = `${eksClusterName}-spot-interruption-rule`
 const spotInterruptionRule = new aws.cloudwatch.EventRule(spotInterruptionRuleName, {
   name: spotInterruptionRuleName,
   eventPattern: JSON.stringify({
@@ -383,7 +397,7 @@ const spotInterruptionTarget = new aws.cloudwatch.EventTarget(spotInterruptionRu
   arn: karpenterInterruptionQueue.arn,
 })
 
-const rebalanceRuleName = `${clusterName}-rebalance-rule`
+const rebalanceRuleName = `${eksClusterName}-rebalance-rule`
 const rebalanceRule = new aws.cloudwatch.EventRule(rebalanceRuleName, {
   name: rebalanceRuleName,
   eventPattern: JSON.stringify({
@@ -400,7 +414,7 @@ const rebalanceTarget = new aws.cloudwatch.EventTarget(rebalanceRuleName, {
   arn: karpenterInterruptionQueue.arn,
 })
 
-const instanceStateChangeRuleName = `${clusterName}-instance-state-change-rule`
+const instanceStateChangeRuleName = `${eksClusterName}-instance-state-change-rule`
 const instanceStateChangeRule = new aws.cloudwatch.EventRule(instanceStateChangeRuleName, {
   name: instanceStateChangeRuleName,
   eventPattern: JSON.stringify({
@@ -421,7 +435,7 @@ const partitionId = await aws.getPartition().then(partition => partition.id)
 const regionId = await aws.getRegion().then(region => region.id)
 const accountId = await aws.getCallerIdentity().then(identity => identity.accountId)
 
-const karpenterControllerPolicyName = `${clusterName}-karpenter-controller-policy`
+const karpenterControllerPolicyName = `${eksClusterName}-karpenter-controller-policy`
 const KarpenterControllerPolicy = new aws.iam.Policy(karpenterControllerPolicyName, {
   policy: aws.iam.getPolicyDocumentOutput({
     statements: [
@@ -450,7 +464,7 @@ const KarpenterControllerPolicy = new aws.iam.Policy(karpenterControllerPolicyNa
         conditions: [
           {
             test: 'StringEquals',
-            variable: `aws:ResourceTag/kubernetes.io/cluster/${clusterName}`,
+            variable: `aws:ResourceTag/kubernetes.io/cluster/${eksClusterName}`,
             values: ['owned']
           },
           {
@@ -479,7 +493,7 @@ const KarpenterControllerPolicy = new aws.iam.Policy(karpenterControllerPolicyNa
         conditions: [
           {
             test: 'StringEquals',
-            variable: `aws:RequestTag/kubernetes.io/cluster/${clusterName}`,
+            variable: `aws:RequestTag/kubernetes.io/cluster/${eksClusterName}`,
             values: ['owned']
           },
           {
@@ -504,7 +518,7 @@ const KarpenterControllerPolicy = new aws.iam.Policy(karpenterControllerPolicyNa
         conditions: [
           {
             test: 'StringEquals',
-            variable: `aws:RequestTag/kubernetes.io/cluster/${clusterName}`,
+            variable: `aws:RequestTag/kubernetes.io/cluster/${eksClusterName}`,
             values: ['owned'],
           },
           {
@@ -527,7 +541,7 @@ const KarpenterControllerPolicy = new aws.iam.Policy(karpenterControllerPolicyNa
         conditions: [
           {
             test: 'StringEquals',
-            variable: `aws:ResourceTag/kubernetes.io/cluster/${clusterName}`,
+            variable: `aws:ResourceTag/kubernetes.io/cluster/${eksClusterName}`,
             values: ['owned']
           },
           {
@@ -556,7 +570,7 @@ const KarpenterControllerPolicy = new aws.iam.Policy(karpenterControllerPolicyNa
         conditions: [
           {
             test: 'StringEquals',
-            variable: `aws:ResourceTag/kubernetes.io/cluster/${clusterName}`,
+            variable: `aws:ResourceTag/kubernetes.io/cluster/${eksClusterName}`,
             values: ['owned']
           },
           {
@@ -614,7 +628,7 @@ const KarpenterControllerPolicy = new aws.iam.Policy(karpenterControllerPolicyNa
       {
         sid: 'AllowPassingInstanceRole',
         effect: 'Allow',
-        resources: [`arn:${partitionId}:iam::${accountId}:role/KarpenterNodeRole-${clusterName}`],
+        resources: [`arn:${partitionId}:iam::${accountId}:role/KarpenterNodeRole-${eksClusterName}`],
         actions: ['iam:PassRole'],
         conditions: [
           {
@@ -632,7 +646,7 @@ const KarpenterControllerPolicy = new aws.iam.Policy(karpenterControllerPolicyNa
         conditions: [
           {
             test: 'StringEquals',
-            variable: `aws:RequestTag/kubernetes.io/cluster/${clusterName}`,
+            variable: `aws:RequestTag/kubernetes.io/cluster/${eksClusterName}`,
             values: ['owned']
           },
           {
@@ -655,7 +669,7 @@ const KarpenterControllerPolicy = new aws.iam.Policy(karpenterControllerPolicyNa
         conditions: [
           {
             test: 'StringEquals',
-            variable: `aws:ResourceTag/kubernetes.io/cluster/${clusterName}`,
+            variable: `aws:ResourceTag/kubernetes.io/cluster/${eksClusterName}`,
             values: ['owned']
           },
           {
@@ -665,7 +679,7 @@ const KarpenterControllerPolicy = new aws.iam.Policy(karpenterControllerPolicyNa
           },
           {
             test: 'StringEquals',
-            variable: `aws:RequestTag/kubernetes.io/cluster/${clusterName}`,
+            variable: `aws:RequestTag/kubernetes.io/cluster/${eksClusterName}`,
             values: ['owned']
           },
           {
@@ -697,7 +711,7 @@ const KarpenterControllerPolicy = new aws.iam.Policy(karpenterControllerPolicyNa
         conditions: [
           {
             test: 'StringEquals',
-            variable: `aws:ResourceTag/kubernetes.io/cluster/${clusterName}`,
+            variable: `aws:ResourceTag/kubernetes.io/cluster/${eksClusterName}`,
             values: ['owned']
           },
           {
@@ -721,7 +735,7 @@ const KarpenterControllerPolicy = new aws.iam.Policy(karpenterControllerPolicyNa
       {
         sid: 'AllowAPIServerEndpointDiscovery',
         effect: 'Allow',
-        resources: [`arn:${partitionId}:eks:${regionId}:${accountId}:cluster/${clusterName}`],
+        resources: [`arn:${partitionId}:eks:${regionId}:${accountId}:cluster/${eksClusterName}`],
         actions: ['eks:DescribeCluster']
       }
     ]
@@ -731,7 +745,7 @@ const KarpenterControllerPolicy = new aws.iam.Policy(karpenterControllerPolicyNa
     Project: project
   }
 })
-const karpenterControllerRoleName = `${clusterName}-karpenter-controller-role`
+const karpenterControllerRoleName = `${eksClusterName}-karpenter-controller-role`
 const karpenterControllerRole = new aws.iam.Role(karpenterControllerRoleName, {
   assumeRolePolicy: {
     Version: "2012-10-17",
@@ -764,23 +778,14 @@ const karpenter = new k8s.helm.v3.Release(karpenterChartName, {
   values: {
     settings: {
       clusterName: cluster.eksCluster.name,
-      // interruptionQueue: karpenterInterruptionQueue.name,
-    },
-    controller: {
-      resources: {
-        requests: {
-          cpu: "0.5",
-          memory: "1Gi",
-        },
-        limits: {
-          cpu: "1",
-          memory: "2Gi",
-        },
-      },
+      interruptionQueue: karpenterInterruptionQueue.name,
+      featureGates: {
+        spotToSpotConsolidation: true
+      }
     },
   },
 }, { provider: k8sProvider });
-const podIdentityAssociationName = `${clusterName}-karpenter-pod-identity-association`
+const podIdentityAssociationName = `${eksClusterName}-karpenter-pod-identity-association`
 const podIdentityAssociation = new aws.eks.PodIdentityAssociation(podIdentityAssociationName, {
   clusterName: cluster.eksCluster.name,
   namespace: karpenterNamespace,
