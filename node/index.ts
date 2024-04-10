@@ -167,16 +167,16 @@ const k8sProvider = new k8s.Provider(eksClusterName, {
 
 // === EKS === Node Group ===
 
-const defaultNodeGroup = new eks.ManagedNodeGroup(`default-node-group`, {
+const highPriorityNodeGroup = new eks.ManagedNodeGroup(`high-priority-node-group`, {
   cluster: eksCluster,
-  instanceTypes: ['m7g.medium'],
+  instanceTypes: ['t4g.medium', 'm7g.medium'],
   capacityType: 'SPOT',
   amiType: 'BOTTLEROCKET_ARM_64',
   nodeRole: eksCluster.instanceRoles[0],
   scalingConfig: {
     minSize: 0,
-    maxSize: 2,
-    desiredSize: 2
+    maxSize: 3,
+    desiredSize: 3
   },
   tags
 }, { parent: eksCluster })
@@ -264,12 +264,6 @@ const podIdentityAgentAddon = new aws.eks.Addon(podIdentityAgentAddonName, {
   resolveConflictsOnCreate: 'OVERWRITE'
 }, { parent: eksCluster })
 
-// === EKS === Gateway API ===
-
-const gatewayAPIController = new k8s.yaml.ConfigFile('gateway-api-controller', {
-  file: 'https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.0.0/standard-install.yaml'
-}, { provider: k8sProvider, parent: eksCluster })
-
 // === EKS === Cilium ===
 
 const k8sServiceHosts = k8s.core.v1.Endpoints.get('kubernetes-endpoint', 'kubernetes', { provider: k8sProvider }).subsets.apply(subsets =>
@@ -303,9 +297,6 @@ const cilium = new k8s.helm.v3.Release('cilium', {
         backend: 'envoy'
       }
     },
-    gatewayAPI: {
-      enabled: true
-    },
     routingMode: 'native',
     bpf: {
       masquerade: true
@@ -318,13 +309,12 @@ const cilium = new k8s.helm.v3.Release('cilium', {
       awsEnablePrefixDelegation: true
     }
   }
-}, { provider: k8sProvider, dependsOn: [gatewayAPIController, awsNodeDaemonSetPatch], parent: eksCluster })
+}, { provider: k8sProvider, parent: eksCluster })
 
 // === EC2 === Interruption Queue ===
 
 const EC2InterruptionQueueName = `${prefix}-ec2-interruption-queue`
 const EC2InterruptionQueue = new aws.sqs.Queue(EC2InterruptionQueueName, {
-  name: EC2InterruptionQueueName,
   messageRetentionSeconds: 300,
   sqsManagedSseEnabled: true,
   tags
@@ -349,7 +339,6 @@ const EC2InterruptionQueuePolicy = new aws.sqs.QueuePolicy(EC2InterruptionQueueP
 
 const scheduledChangeRuleName = `${prefix}-scheduled-change-rule`
 const scheduledChangeRule = new aws.cloudwatch.EventRule(scheduledChangeRuleName, {
-  name: scheduledChangeRuleName,
   eventPattern: JSON.stringify({
     source: ['aws.health'],
     'detail-type': ['AWS Health Event']
@@ -363,7 +352,6 @@ const scheduledChangeTarget = new aws.cloudwatch.EventTarget(scheduledChangeRule
 
 const spotInterruptionRuleName = `${prefix}-spot-interruption-rule`
 const spotInterruptionRule = new aws.cloudwatch.EventRule(spotInterruptionRuleName, {
-  name: spotInterruptionRuleName,
   eventPattern: JSON.stringify({
     source: ['aws.ec2'],
     'detail-type': ['EC2 Spot Instance Interruption Warning']
@@ -377,7 +365,6 @@ const spotInterruptionTarget = new aws.cloudwatch.EventTarget(spotInterruptionRu
 
 const rebalanceRuleName = `${prefix}-rebalance-rule`
 const rebalanceRule = new aws.cloudwatch.EventRule(rebalanceRuleName, {
-  name: rebalanceRuleName,
   eventPattern: JSON.stringify({
     source: ['aws.ec2'],
     'detail-type': ['EC2 Instance Rebalance Recommendation']
@@ -391,7 +378,6 @@ const rebalanceTarget = new aws.cloudwatch.EventTarget(rebalanceRuleName, {
 
 const instanceStateChangeRuleName = `${prefix}-instance-state-change-rule`
 const instanceStateChangeRule = new aws.cloudwatch.EventRule(instanceStateChangeRuleName, {
-  name: instanceStateChangeRuleName,
   eventPattern: JSON.stringify({
     source: ['aws.ec2'],
     'detail-type': ['EC2 Instance State-change Notification']
@@ -405,7 +391,18 @@ const instanceStateChangeTarget = new aws.cloudwatch.EventTarget(instanceStateCh
 
 // === EKS === Karpenter === Controller Role ===
 
-const karpenterControllerPolicy = (partitionId: string, regionId: string, accountId: string, clusterName: string, nodeRoleName: string) => aws.iam.getPolicyDocumentOutput({
+interface KarpenterControllerPolicyProps {
+  partitionId: string
+  regionId: string
+  accountId: string
+  eksClusterName: string
+  eksNodeRoleName: string
+  ec2InterruptionQueueName: string
+}
+
+const karpenterControllerPolicy = (
+  { partitionId, regionId, accountId, eksClusterName, eksNodeRoleName, ec2InterruptionQueueName }: KarpenterControllerPolicyProps
+) => aws.iam.getPolicyDocumentOutput({
   statements: [
     {
       sid: 'AllowScopedEC2InstanceAccessActions',
@@ -432,7 +429,7 @@ const karpenterControllerPolicy = (partitionId: string, regionId: string, accoun
       conditions: [
         {
           test: 'StringEquals',
-          variable: `aws:ResourceTag/kubernetes.io/cluster/${clusterName}`,
+          variable: `aws:ResourceTag/kubernetes.io/cluster/${eksClusterName}`,
           values: ['owned']
         },
         {
@@ -461,7 +458,7 @@ const karpenterControllerPolicy = (partitionId: string, regionId: string, accoun
       conditions: [
         {
           test: 'StringEquals',
-          variable: `aws:RequestTag/kubernetes.io/cluster/${clusterName}`,
+          variable: `aws:RequestTag/kubernetes.io/cluster/${eksClusterName}`,
           values: ['owned']
         },
         {
@@ -486,7 +483,7 @@ const karpenterControllerPolicy = (partitionId: string, regionId: string, accoun
       conditions: [
         {
           test: 'StringEquals',
-          variable: `aws:RequestTag/kubernetes.io/cluster/${clusterName}`,
+          variable: `aws:RequestTag/kubernetes.io/cluster/${eksClusterName}`,
           values: ['owned']
         },
         {
@@ -509,7 +506,7 @@ const karpenterControllerPolicy = (partitionId: string, regionId: string, accoun
       conditions: [
         {
           test: 'StringEquals',
-          variable: `aws:ResourceTag/kubernetes.io/cluster/${clusterName}`,
+          variable: `aws:ResourceTag/kubernetes.io/cluster/${eksClusterName}`,
           values: ['owned']
         },
         {
@@ -538,7 +535,7 @@ const karpenterControllerPolicy = (partitionId: string, regionId: string, accoun
       conditions: [
         {
           test: 'StringEquals',
-          variable: `aws:ResourceTag/kubernetes.io/cluster/${clusterName}`,
+          variable: `aws:ResourceTag/kubernetes.io/cluster/${eksClusterName}`,
           values: ['owned']
         },
         {
@@ -586,7 +583,7 @@ const karpenterControllerPolicy = (partitionId: string, regionId: string, accoun
     {
       sid: 'AllowInterruptionQueueActions',
       effect: 'Allow',
-      resources: [`arn:${partitionId}:sqs:${regionId}:${accountId}:${EC2InterruptionQueueName}`],
+      resources: [`arn:${partitionId}:sqs:${regionId}:${accountId}:${ec2InterruptionQueueName}`],
       actions: [
         'sqs:DeleteMessage',
         'sqs:GetQueueUrl',
@@ -596,7 +593,7 @@ const karpenterControllerPolicy = (partitionId: string, regionId: string, accoun
     {
       sid: 'AllowPassingInstanceRole',
       effect: 'Allow',
-      resources: [`arn:${partitionId}:iam::${accountId}:role/${nodeRoleName}`],
+      resources: [`arn:${partitionId}:iam::${accountId}:role/${eksNodeRoleName}`],
       actions: ['iam:PassRole'],
       conditions: [
         {
@@ -614,7 +611,7 @@ const karpenterControllerPolicy = (partitionId: string, regionId: string, accoun
       conditions: [
         {
           test: 'StringEquals',
-          variable: `aws:RequestTag/kubernetes.io/cluster/${clusterName}`,
+          variable: `aws:RequestTag/kubernetes.io/cluster/${eksClusterName}`,
           values: ['owned']
         },
         {
@@ -637,7 +634,7 @@ const karpenterControllerPolicy = (partitionId: string, regionId: string, accoun
       conditions: [
         {
           test: 'StringEquals',
-          variable: `aws:ResourceTag/kubernetes.io/cluster/${clusterName}`,
+          variable: `aws:ResourceTag/kubernetes.io/cluster/${eksClusterName}`,
           values: ['owned']
         },
         {
@@ -647,7 +644,7 @@ const karpenterControllerPolicy = (partitionId: string, regionId: string, accoun
         },
         {
           test: 'StringEquals',
-          variable: `aws:RequestTag/kubernetes.io/cluster/${clusterName}`,
+          variable: `aws:RequestTag/kubernetes.io/cluster/${eksClusterName}`,
           values: ['owned']
         },
         {
@@ -679,7 +676,7 @@ const karpenterControllerPolicy = (partitionId: string, regionId: string, accoun
       conditions: [
         {
           test: 'StringEquals',
-          variable: `aws:ResourceTag/kubernetes.io/cluster/${clusterName}`,
+          variable: `aws:ResourceTag/kubernetes.io/cluster/${eksClusterName}`,
           values: ['owned']
         },
         {
@@ -703,7 +700,7 @@ const karpenterControllerPolicy = (partitionId: string, regionId: string, accoun
     {
       sid: 'AllowAPIServerEndpointDiscovery',
       effect: 'Allow',
-      resources: [`arn:${partitionId}:eks:${regionId}:${accountId}:cluster/${clusterName}`],
+      resources: [`arn:${partitionId}:eks:${regionId}:${accountId}:cluster/${eksClusterName}`],
       actions: ['eks:DescribeCluster']
     }
   ]
@@ -715,7 +712,10 @@ const accountId = await aws.getCallerIdentity().then(identity => identity.accoun
 
 const karpenterControllerPolicyName = `${prefix}-karpenter-controller-policy`
 const KarpenterControllerPolicy = new aws.iam.Policy(karpenterControllerPolicyName, {
-  policy: karpenterControllerPolicy(partitionId, regionId, accountId, eksClusterName, eksNodeRoleName).json,
+  policy: EC2InterruptionQueue.name.apply(ec2InterruptionQueueName =>
+    karpenterControllerPolicy({
+      partitionId, regionId, accountId, eksClusterName, eksNodeRoleName, ec2InterruptionQueueName
+    }).json),
   tags
 })
 const karpenterControllerRoleName = `${prefix}-karpenter-controller-role`
