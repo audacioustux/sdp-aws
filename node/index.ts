@@ -7,7 +7,7 @@ const organization = pulumi.getOrganization()
 const project = pulumi.getProject()
 const stack = pulumi.getStack()
 
-const clusterName = `${project}-${stack}`
+const prefix = `${project}-${stack}`
 
 const tags = {
   Stack: stack,
@@ -17,7 +17,7 @@ const tags = {
 
 // === VPC ===
 
-const vpc = new aws.ec2.Vpc(`${clusterName}-vpc`, {
+const vpc = new aws.ec2.Vpc(`${prefix}-vpc`, {
   cidrBlock: '10.0.0.0/16',
   enableDnsSupport: true,
   enableDnsHostnames: true,
@@ -28,7 +28,7 @@ const vpc = new aws.ec2.Vpc(`${clusterName}-vpc`, {
 
 const availabilityZones = await aws.getAvailabilityZones({ state: 'available' })
 const publicSubnets = availabilityZones.names.map((az, index) => {
-  return new aws.ec2.Subnet(`${clusterName}-public-${index}`, {
+  return new aws.ec2.Subnet(`${prefix}-public-${index}`, {
     vpcId: vpc.id,
     cidrBlock: `10.0.${index}.0/24`,
     availabilityZone: az,
@@ -38,7 +38,7 @@ const publicSubnets = availabilityZones.names.map((az, index) => {
 })
 
 const privateSubnets = availabilityZones.names.map((az, index) => {
-  return new aws.ec2.Subnet(`${clusterName}-private-${index}`, {
+  return new aws.ec2.Subnet(`${prefix}-private-${index}`, {
     vpcId: vpc.id,
     cidrBlock: `10.0.${index + 10}.0/24`,
     availabilityZone: az,
@@ -49,19 +49,19 @@ const privateSubnets = availabilityZones.names.map((az, index) => {
 
 // === VPC === Internet Gateway ===
 
-const internetGateway = new aws.ec2.InternetGateway(`${clusterName}-igw`, {
+const internetGateway = new aws.ec2.InternetGateway(`${prefix}-igw`, {
   vpcId: vpc.id,
   tags
 })
 
 // === VPC === NAT Gateway ===
 
-const eip = new aws.ec2.Eip(`${clusterName}-eip`, {
+const eip = new aws.ec2.Eip(`${prefix}-eip`, {
   domain: 'vpc',
   tags
 })
 
-const natGateway = new aws.ec2.NatGateway(`${clusterName}-nat`, {
+const natGateway = new aws.ec2.NatGateway(`${prefix}-nat`, {
   subnetId: publicSubnets[0].id,
   allocationId: eip.id,
   connectivityType: 'public',
@@ -70,7 +70,7 @@ const natGateway = new aws.ec2.NatGateway(`${clusterName}-nat`, {
 
 // === VPC === Route Tables ===
 
-const publicRouteTable = new aws.ec2.RouteTable(`${clusterName}-public-rt`, {
+const publicRouteTable = new aws.ec2.RouteTable(`${prefix}-public-rt`, {
   vpcId: vpc.id,
   routes: [{
     cidrBlock: '0.0.0.0/0',
@@ -85,7 +85,7 @@ const publicSubnetAssociations = publicSubnets.map((subnet, index) => {
   }, { parent: publicRouteTable })
 })
 
-const privateRouteTable = new aws.ec2.RouteTable(`${clusterName}-private-rt`, {
+const privateRouteTable = new aws.ec2.RouteTable(`${prefix}-private-rt`, {
   vpcId: vpc.id,
   routes: [{
     cidrBlock: '0.0.0.0/0',
@@ -102,7 +102,7 @@ const privateSubnetAssociations = privateSubnets.map((subnet, index) => {
 
 // === KMS ===
 
-const kmsKey = new aws.kms.Key(`${clusterName}-kms`, {
+const kmsKey = new aws.kms.Key(`${prefix}-kms`, {
   description: 'KMS key for encrypting resources',
   deletionWindowInDays: 10,
   tags
@@ -110,7 +110,8 @@ const kmsKey = new aws.kms.Key(`${clusterName}-kms`, {
 
 // === EKS === Node Role ===
 
-const eksNodeRole = new aws.iam.Role(`${clusterName}-node-role`, {
+const eksNodeRoleName = `${prefix}-eks-node-role`
+const eksNodeRole = new aws.iam.Role(eksNodeRoleName, {
   assumeRolePolicy: aws.iam.assumeRolePolicyForPrincipal({
     Service: 'ec2.amazonaws.com'
   }),
@@ -126,10 +127,11 @@ const eksNodeRole = new aws.iam.Role(`${clusterName}-node-role`, {
 
 // === EKS === Cluster ===
 
-const clusterVersion = '1.29'
-const cluster = new eks.Cluster(clusterName, {
-  name: clusterName,
-  version: clusterVersion,
+const eksClusterVersion = '1.29'
+const eksClusterName = `${prefix}-eks`
+const eksCluster = new eks.Cluster(eksClusterName, {
+  name: eksClusterName,
+  version: eksClusterVersion,
   vpcId: vpc.id,
   createOidcProvider: true,
   publicSubnetIds: publicSubnets.map(s => s.id),
@@ -154,59 +156,58 @@ const cluster = new eks.Cluster(clusterName, {
   ],
   tags: {
     ...tags,
-    'karpenter.sh/discovery': clusterName
+    'karpenter.sh/discovery': eksClusterName
   }
 })
 
-const k8sProvider = new k8s.Provider(clusterName, {
-  kubeconfig: cluster.kubeconfigJson,
+const k8sProvider = new k8s.Provider(eksClusterName, {
+  kubeconfig: eksCluster.kubeconfigJson,
   enableServerSideApply: true
 })
 
 // === EKS === Node Group ===
 
-const defaultNodeGroupName = 'default-node-group'
-const defaultNodeGroup = new eks.ManagedNodeGroup(defaultNodeGroupName, {
-  cluster,
+const defaultNodeGroup = new eks.ManagedNodeGroup(`default-node-group`, {
+  cluster: eksCluster,
   instanceTypes: ['m7g.medium'],
   capacityType: 'SPOT',
   amiType: 'BOTTLEROCKET_ARM_64',
-  nodeRole: cluster.instanceRoles[0],
+  nodeRole: eksCluster.instanceRoles[0],
   scalingConfig: {
     minSize: 0,
     maxSize: 2,
     desiredSize: 2
   },
   tags
-})
+}, { parent: eksCluster })
 
 // === EKS === Addons === CoreDNS ===
 
 const coreDNSAddonName = 'coredns'
 const coreDNSAddon = new aws.eks.Addon(coreDNSAddonName, {
   addonName: coreDNSAddonName,
-  clusterName: cluster.eksCluster.name,
+  clusterName: eksCluster.eksCluster.name,
   addonVersion: (await aws.eks.getAddonVersion({
     addonName: coreDNSAddonName,
-    kubernetesVersion: clusterVersion,
+    kubernetesVersion: eksClusterVersion,
     mostRecent: true
   })).version,
   resolveConflictsOnCreate: 'OVERWRITE'
-})
+}, { parent: eksCluster })
 
 // === EKS === Addons === VPC CNI ===
 
 const vpcCniAddonName = 'vpc-cni'
 const vpcCniAddon = new aws.eks.Addon(vpcCniAddonName, {
   addonName: vpcCniAddonName,
-  clusterName: cluster.eksCluster.name,
+  clusterName: eksCluster.eksCluster.name,
   addonVersion: (await aws.eks.getAddonVersion({
     addonName: vpcCniAddonName,
-    kubernetesVersion: clusterVersion,
+    kubernetesVersion: eksClusterVersion,
     mostRecent: true
   })).version,
   resolveConflictsOnCreate: 'OVERWRITE'
-})
+}, { parent: eksCluster })
 const awsNodeDaemonSetPatch = new k8s.apps.v1.DaemonSetPatch('aws-node-patch', {
   metadata: {
     namespace: 'kube-system',
@@ -221,11 +222,11 @@ const awsNodeDaemonSetPatch = new k8s.apps.v1.DaemonSetPatch('aws-node-patch', {
       }
     }
   }
-}, { provider: k8sProvider, retainOnDelete: true })
+}, { provider: k8sProvider, retainOnDelete: true, dependsOn: vpcCniAddon, parent: eksCluster })
 
 // === EKS === Addons === EBS CSI Driver ===
 
-const ebsCsiDriverRoleName = `${clusterName}-ebs-csi-driver-irsa`
+const ebsCsiDriverRoleName = `${prefix}-ebs-csi-driver-irsa`
 const ebsCsiDriverRole = new aws.iam.Role(ebsCsiDriverRoleName, {
   assumeRolePolicy: aws.iam.assumeRolePolicyForPrincipal({
     Service: 'ec2.amazonaws.com'
@@ -239,44 +240,43 @@ const policyAttachment = new aws.iam.RolePolicyAttachment(`${ebsCsiDriverRoleNam
 const csiDriverAddonName = 'aws-ebs-csi-driver'
 const ebsCsiAddon = new aws.eks.Addon(csiDriverAddonName, {
   addonName: csiDriverAddonName,
-  clusterName: cluster.eksCluster.name,
+  clusterName: eksCluster.eksCluster.name,
   addonVersion: (await aws.eks.getAddonVersion({
     addonName: csiDriverAddonName,
-    kubernetesVersion: clusterVersion,
+    kubernetesVersion: eksClusterVersion,
     mostRecent: true
   })).version,
   serviceAccountRoleArn: ebsCsiDriverRole.arn,
   resolveConflictsOnCreate: 'OVERWRITE'
-})
+}, { parent: eksCluster })
 
 // === EKS === Addons === Pod Identity Agent ===
 
 const podIdentityAgentAddonName = 'eks-pod-identity-agent'
 const podIdentityAgentAddon = new aws.eks.Addon(podIdentityAgentAddonName, {
   addonName: podIdentityAgentAddonName,
-  clusterName: cluster.eksCluster.name,
+  clusterName: eksCluster.eksCluster.name,
   addonVersion: (await aws.eks.getAddonVersion({
     addonName: podIdentityAgentAddonName,
-    kubernetesVersion: clusterVersion,
+    kubernetesVersion: eksClusterVersion,
     mostRecent: true
   })).version,
   resolveConflictsOnCreate: 'OVERWRITE'
-})
+}, { parent: eksCluster })
 
 // === EKS === Gateway API ===
 
 const gatewayAPIController = new k8s.yaml.ConfigFile('gateway-api-controller', {
   file: 'https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.0.0/standard-install.yaml'
-}, { provider: k8sProvider })
+}, { provider: k8sProvider, parent: eksCluster })
 
 // === EKS === Cilium ===
 
 const k8sServiceHosts = k8s.core.v1.Endpoints.get('kubernetes-endpoint', 'kubernetes', { provider: k8sProvider }).subsets.apply(subsets =>
   subsets.map(subset => subset.addresses.map(address => address.ip)).flat()
 )
-const ciliumChartName = 'cilium'
-const cilium = new k8s.helm.v3.Release(ciliumChartName, {
-  chart: ciliumChartName,
+const cilium = new k8s.helm.v3.Release('cilium', {
+  chart: 'cilium',
   namespace: 'kube-system',
   repositoryOpts: {
     repo: 'https://helm.cilium.io'
@@ -318,11 +318,11 @@ const cilium = new k8s.helm.v3.Release(ciliumChartName, {
       awsEnablePrefixDelegation: true
     }
   }
-}, { provider: k8sProvider, dependsOn: [gatewayAPIController, awsNodeDaemonSetPatch] })
+}, { provider: k8sProvider, dependsOn: [gatewayAPIController, awsNodeDaemonSetPatch], parent: eksCluster })
 
 // === EC2 === Interruption Queue ===
 
-const EC2InterruptionQueueName = `${clusterName}-ec2-interruption-queue`
+const EC2InterruptionQueueName = `${prefix}-ec2-interruption-queue`
 const EC2InterruptionQueue = new aws.sqs.Queue(EC2InterruptionQueueName, {
   name: EC2InterruptionQueueName,
   messageRetentionSeconds: 300,
@@ -347,7 +347,7 @@ const EC2InterruptionQueuePolicy = new aws.sqs.QueuePolicy(EC2InterruptionQueueP
   }
 })
 
-const scheduledChangeRuleName = `${clusterName}-scheduled-change-rule`
+const scheduledChangeRuleName = `${prefix}-scheduled-change-rule`
 const scheduledChangeRule = new aws.cloudwatch.EventRule(scheduledChangeRuleName, {
   name: scheduledChangeRuleName,
   eventPattern: JSON.stringify({
@@ -361,7 +361,7 @@ const scheduledChangeTarget = new aws.cloudwatch.EventTarget(scheduledChangeRule
   arn: EC2InterruptionQueue.arn
 })
 
-const spotInterruptionRuleName = `${clusterName}-spot-interruption-rule`
+const spotInterruptionRuleName = `${prefix}-spot-interruption-rule`
 const spotInterruptionRule = new aws.cloudwatch.EventRule(spotInterruptionRuleName, {
   name: spotInterruptionRuleName,
   eventPattern: JSON.stringify({
@@ -375,7 +375,7 @@ const spotInterruptionTarget = new aws.cloudwatch.EventTarget(spotInterruptionRu
   arn: EC2InterruptionQueue.arn
 })
 
-const rebalanceRuleName = `${clusterName}-rebalance-rule`
+const rebalanceRuleName = `${prefix}-rebalance-rule`
 const rebalanceRule = new aws.cloudwatch.EventRule(rebalanceRuleName, {
   name: rebalanceRuleName,
   eventPattern: JSON.stringify({
@@ -389,7 +389,7 @@ const rebalanceTarget = new aws.cloudwatch.EventTarget(rebalanceRuleName, {
   arn: EC2InterruptionQueue.arn
 })
 
-const instanceStateChangeRuleName = `${clusterName}-instance-state-change-rule`
+const instanceStateChangeRuleName = `${prefix}-instance-state-change-rule`
 const instanceStateChangeRule = new aws.cloudwatch.EventRule(instanceStateChangeRuleName, {
   name: instanceStateChangeRuleName,
   eventPattern: JSON.stringify({
@@ -713,12 +713,12 @@ const partitionId = await aws.getPartition().then(partition => partition.id)
 const regionId = await aws.getRegion().then(region => region.id)
 const accountId = await aws.getCallerIdentity().then(identity => identity.accountId)
 
-const karpenterControllerPolicyName = `karpenter-controller-policy`
+const karpenterControllerPolicyName = `${prefix}-karpenter-controller-policy`
 const KarpenterControllerPolicy = new aws.iam.Policy(karpenterControllerPolicyName, {
-  policy: karpenterControllerPolicy(partitionId, regionId, accountId, clusterName, eksNodeRole.name.get()).json,
+  policy: karpenterControllerPolicy(partitionId, regionId, accountId, eksClusterName, eksNodeRoleName).json,
   tags
 })
-const karpenterControllerRoleName = `karpenter-controller-role`
+const karpenterControllerRoleName = `${prefix}-karpenter-controller-role`
 const karpenterControllerRole = new aws.iam.Role(karpenterControllerRoleName, {
   assumeRolePolicy: {
     Version: '2012-10-17',
@@ -735,41 +735,38 @@ const karpenterControllerRole = new aws.iam.Role(karpenterControllerRoleName, {
   },
   tags
 })
-const karpenterControllerRolePolicyAttachment = new aws.iam.RolePolicyAttachment(`${karpenterControllerRoleName}-attachment`, {
+const karpenterControllerRolePolicyAttachment = new aws.iam.RolePolicyAttachment(karpenterControllerRoleName, {
   policyArn: KarpenterControllerPolicy.arn,
   role: karpenterControllerRole
 })
 
-const podIdentityAssociationName = `pod-identity-association`
-const podIdentityAssociation = new aws.eks.PodIdentityAssociation(podIdentityAssociationName, {
-  clusterName: cluster.eksCluster.name,
+const podIdentityAssociation = new aws.eks.PodIdentityAssociation('pod-identity-association', {
+  clusterName: eksCluster.eksCluster.name,
   namespace: 'kube-system',
   serviceAccount: 'karpenter',
   roleArn: karpenterControllerRole.arn,
   tags
-})
+}, { parent: eksCluster })
 
 // === EKS === Karpenter ===
 
-const karpenterChartName = 'karpenter'
-const karpenter = new k8s.helm.v3.Release(karpenterChartName, {
+const karpenter = new k8s.helm.v3.Release('karpenter', {
   chart: 'oci://public.ecr.aws/karpenter/karpenter',
-  name: karpenterChartName,
   namespace: 'kube-system',
   values: {
     settings: {
-      clusterName: cluster.eksCluster.name,
+      clusterName: eksCluster.eksCluster.name,
       interruptionQueue: EC2InterruptionQueue.name,
       featureGates: {
         spotToSpotConsolidation: true
       }
     }
   }
-}, { provider: k8sProvider })
+}, { provider: k8sProvider, dependsOn: [podIdentityAssociation], parent: eksCluster })
 
 // === EKS === Karpenter === Node Class ===
 
-const defaultNodeClassName = `${clusterName}-default-node-class`
+const defaultNodeClassName = `default-node-class`
 const defaultNodeClass = new k8s.apiextensions.CustomResource(defaultNodeClassName, {
   apiVersion: 'karpenter.k8s.aws/v1beta1',
   kind: 'EC2NodeClass',
@@ -783,23 +780,23 @@ const defaultNodeClass = new k8s.apiextensions.CustomResource(defaultNodeClassNa
     subnetSelectorTerms: [
       {
         tags: {
-          'karpenter.sh/discovery': cluster.eksCluster.name
+          'karpenter.sh/discovery': eksCluster.eksCluster.name
         }
       }
     ],
     securityGroupSelectorTerms: [
       {
         tags: {
-          'karpenter.sh/discovery': cluster.eksCluster.name
+          'karpenter.sh/discovery': eksCluster.eksCluster.name
         }
       }
     ]
   }
-}, { provider: k8sProvider, dependsOn: [karpenter] })
+}, { provider: k8sProvider, dependsOn: [karpenter], parent: eksCluster })
 
 // === EKS === Karpenter === Node Pool ===
 
-const defaultNodePoolName = `${clusterName}-default-node-pool`
+const defaultNodePoolName = `${prefix}-default-node-pool`
 const defaultNodePool = new k8s.apiextensions.CustomResource(defaultNodePoolName, {
   apiVersion: 'karpenter.sh/v1beta1',
   kind: 'NodePool',
@@ -846,6 +843,6 @@ const defaultNodePool = new k8s.apiextensions.CustomResource(defaultNodePoolName
       expireAfter: '720h'
     }
   }
-}, { provider: k8sProvider, dependsOn: [karpenter] })
+}, { provider: k8sProvider, dependsOn: [karpenter], parent: eksCluster })
 
-export const kubeconfig = cluster.kubeconfig
+export const kubeconfig = eksCluster.kubeconfig
