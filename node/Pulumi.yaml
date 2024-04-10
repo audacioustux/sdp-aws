@@ -1,5 +1,5 @@
-name: ct-platform-infra
-description: CodersTrust Platform Infra
+name: sdp
+description: Software Delivery Platform
 config:
   pulumi:tags:
     value:

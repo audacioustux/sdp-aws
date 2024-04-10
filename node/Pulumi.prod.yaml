@@ -1,4 +1,2 @@
 config:
   aws:region: ap-south-1
-  ct-platform-infra:env: prod
-  ct-platform-infra:project: platform-infra

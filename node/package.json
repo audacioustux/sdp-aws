@@ -1,10 +1,7 @@
 {
-    "name": "ct-platform-infra",
+    "name": "platform-infra-template",
     "exports": "./index.ts",
     "type": "module",
-    "scripts": {
-        "fmt": "npx ts-standard --fix"
-    },
     "engines": {
         "node": ">=20.0.0"
     },
