@@ -178,9 +178,11 @@ const {
 
 // === EKS === Node Group ===
 
-const highPriorityNodeGroup = new eks.ManagedNodeGroup(`high-priority-node-group`, {
+const highPriorityNodeGroupName = `${stackName}-high-priority`
+const highPriorityNodeGroup = new eks.ManagedNodeGroup(highPriorityNodeGroupName, {
+  nodeGroupName: highPriorityNodeGroupName,
   cluster,
-  instanceTypes: ['t4g.medium', 'm7g.medium'],
+  instanceTypes: ['m7g.medium', 't4g.medium'],
   capacityType: 'SPOT',
   amiType: 'BOTTLEROCKET_ARM_64',
   nodeRole: cluster.instanceRoles[0],
@@ -189,7 +191,7 @@ const highPriorityNodeGroup = new eks.ManagedNodeGroup(`high-priority-node-group
     maxSize: 3,
     desiredSize: 3
   },
-}, { parent: eksCluster })
+})
 
 // === EKS === Addons === CoreDNS ===
 
@@ -203,7 +205,7 @@ const coreDNSAddon = new aws.eks.Addon(coreDNSAddonName, {
     mostRecent: true
   })).version,
   resolveConflictsOnCreate: 'OVERWRITE'
-}, { parent: eksCluster })
+})
 
 // === EKS === Addons === VPC CNI ===
 
@@ -218,7 +220,7 @@ const vpcCniAddon = new aws.eks.Addon(vpcCniAddonName, {
       mostRecent: true
     })).version,
   resolveConflictsOnCreate: 'OVERWRITE'
-}, { parent: eksCluster })
+})
 const awsNodeDaemonSetPatch = new k8s.apps.v1.DaemonSetPatch('aws-node-patch', {
   metadata: {
     namespace: 'kube-system',
@@ -233,7 +235,7 @@ const awsNodeDaemonSetPatch = new k8s.apps.v1.DaemonSetPatch('aws-node-patch', {
       }
     }
   }
-}, { provider, retainOnDelete: true, dependsOn: vpcCniAddon, parent: eksCluster })
+}, { provider, retainOnDelete: true, dependsOn: vpcCniAddon })
 
 // === EKS === Addons === EBS CSI Driver ===
 
@@ -260,7 +262,7 @@ const ebsCsiAddon = new aws.eks.Addon(csiDriverAddonName, {
     })).version,
   serviceAccountRoleArn: ebsCsiDriverRole.arn,
   resolveConflictsOnCreate: 'OVERWRITE'
-}, { parent: eksCluster })
+})
 
 // === EKS === Addons === Pod Identity Agent ===
 
@@ -275,7 +277,7 @@ const podIdentityAgentAddon = new aws.eks.Addon(podIdentityAgentAddonName, {
       mostRecent: true
     })).version,
   resolveConflictsOnCreate: 'OVERWRITE'
-}, { parent: eksCluster })
+})
 
 // === EKS === Cilium ===
 
@@ -314,9 +316,6 @@ const cilium = new k8s.helm.v3.Release('cilium', {
     envoy: {
       enabled: true
     },
-    gatewayAPI: {
-      enabled: true
-    },
     routingMode: 'native',
     bpf: {
       masquerade: true
@@ -329,7 +328,7 @@ const cilium = new k8s.helm.v3.Release('cilium', {
       awsEnablePrefixDelegation: true
     }
   }
-}, { provider, parent: eksCluster, dependsOn: [awsNodeDaemonSetPatch] })
+}, { provider, dependsOn: [awsNodeDaemonSetPatch] })
 
 // === EC2 === Interruption Queue ===
 
@@ -763,8 +762,7 @@ const podIdentityAssociation = new aws.eks.PodIdentityAssociation('pod-identity-
   namespace: 'kube-system',
   serviceAccount: 'karpenter',
   roleArn: karpenterControllerRole.arn,
-
-}, { parent: eksCluster })
+})
 
 // === EKS === Karpenter ===
 
@@ -781,7 +779,7 @@ const karpenter = new k8s.helm.v3.Release('karpenter', {
       }
     }
   }
-}, { provider, parent: eksCluster })
+}, { provider, dependsOn: [highPriorityNodeGroup] })
 
 // === EKS === Karpenter === Node Class ===
 
@@ -811,9 +809,9 @@ const defaultNodeClass = new k8s.apiextensions.CustomResource(defaultNodeClassNa
       }
     ]
   }
-}, { provider, dependsOn: [karpenter], parent: eksCluster })
+}, { provider, dependsOn: [karpenter] })
 
-// // === EKS === Karpenter === Node Pool ===
+// === EKS === Karpenter === Node Pool ===
 
 const defaultNodePoolName = `default-node-pool`
 const defaultNodePool = new k8s.apiextensions.CustomResource(defaultNodePoolName, {
@@ -857,28 +855,9 @@ const defaultNodePool = new k8s.apiextensions.CustomResource(defaultNodePoolName
       expireAfter: '48h'
     }
   }
-}, { provider, dependsOn: [karpenter], parent: eksCluster })
+}, { provider, dependsOn: [karpenter] })
 
 // === EKS === ArgoCD ===
-
-// redis-ha:
-//   enabled: true
-
-// controller:
-//   replicas: 1
-
-// server:
-//   autoscaling:
-//     enabled: true
-//     minReplicas: 2
-
-// repoServer:
-//   autoscaling:
-//     enabled: true
-//     minReplicas: 2
-
-// applicationSet:
-//   replicas: 2
 
 const argocd = new k8s.helm.v3.Release('argocd', {
   name: 'argocd',
@@ -909,7 +888,8 @@ const argocd = new k8s.helm.v3.Release('argocd', {
     applicationSet: {
       replicas: 2
     }
-  }
-}, { provider, parent: eksCluster })
+  },
+  createNamespace: true
+}, { provider, customTimeouts: { create: '30m' } })
 
 export const kubeconfig = kubeconfigJson
