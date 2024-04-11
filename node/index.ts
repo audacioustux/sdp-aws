@@ -859,37 +859,37 @@ const defaultNodePool = new k8s.apiextensions.CustomResource(defaultNodePoolName
 
 // === EKS === ArgoCD ===
 
-const argocd = new k8s.helm.v3.Release('argocd', {
-  name: 'argocd',
-  chart: 'argo-cd',
-  namespace: 'argocd',
-  repositoryOpts: {
-    repo: 'https://argoproj.github.io/argo-helm'
-  },
-  values: {
-    'redis-ha': {
-      enabled: true
-    },
-    controller: {
-      replicas: 1
-    },
-    server: {
-      autoscaling: {
-        enabled: true,
-        minReplicas: 2
-      }
-    },
-    repoServer: {
-      autoscaling: {
-        enabled: true,
-        minReplicas: 2
-      }
-    },
-    applicationSet: {
-      replicas: 2
-    }
-  },
-  createNamespace: true
-}, { provider, customTimeouts: { create: '30m' } })
+// const argocd = new k8s.helm.v3.Release('argocd', {
+//   name: 'argocd',
+//   chart: 'argo-cd',
+//   namespace: 'argocd',
+//   repositoryOpts: {
+//     repo: 'https://argoproj.github.io/argo-helm'
+//   },
+//   values: {
+//     'redis-ha': {
+//       enabled: true
+//     },
+//     controller: {
+//       replicas: 1
+//     },
+//     server: {
+//       autoscaling: {
+//         enabled: true,
+//         minReplicas: 2
+//       }
+//     },
+//     repoServer: {
+//       autoscaling: {
+//         enabled: true,
+//         minReplicas: 2
+//       }
+//     },
+//     applicationSet: {
+//       replicas: 2
+//     }
+//   },
+//   createNamespace: true
+// }, { provider, customTimeouts: { create: '30m' } })
 
 export const kubeconfig = kubeconfigJson
