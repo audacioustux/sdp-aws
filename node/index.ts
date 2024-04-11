@@ -311,6 +311,12 @@ const cilium = new k8s.helm.v3.Release('cilium', {
         backend: 'envoy'
       }
     },
+    envoy: {
+      enabled: true
+    },
+    gatewayAPI: {
+      enabled: true
+    },
     routingMode: 'native',
     bpf: {
       masquerade: true
@@ -852,5 +858,58 @@ const defaultNodePool = new k8s.apiextensions.CustomResource(defaultNodePoolName
     }
   }
 }, { provider, dependsOn: [karpenter], parent: eksCluster })
+
+// === EKS === ArgoCD ===
+
+// redis-ha:
+//   enabled: true
+
+// controller:
+//   replicas: 1
+
+// server:
+//   autoscaling:
+//     enabled: true
+//     minReplicas: 2
+
+// repoServer:
+//   autoscaling:
+//     enabled: true
+//     minReplicas: 2
+
+// applicationSet:
+//   replicas: 2
+
+const argocd = new k8s.helm.v3.Release('argocd', {
+  name: 'argocd',
+  chart: 'argo-cd',
+  namespace: 'argocd',
+  repositoryOpts: {
+    repo: 'https://argoproj.github.io/argo-helm'
+  },
+  values: {
+    'redis-ha': {
+      enabled: true
+    },
+    controller: {
+      replicas: 1
+    },
+    server: {
+      autoscaling: {
+        enabled: true,
+        minReplicas: 2
+      }
+    },
+    repoServer: {
+      autoscaling: {
+        enabled: true,
+        minReplicas: 2
+      }
+    },
+    applicationSet: {
+      replicas: 2
+    }
+  }
+}, { provider, parent: eksCluster })
 
 export const kubeconfig = kubeconfigJson
