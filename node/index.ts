@@ -27,7 +27,7 @@ const publicSubnets = availabilityZones.names.map((az, index) => {
     availabilityZone: az,
     mapPublicIpOnLaunch: true,
     tags: {
-      Name: subnetName
+      Name: subnetName,
     }
   })
 })
@@ -152,6 +152,7 @@ const {
   createOidcProvider: true,
   publicSubnetIds: publicSubnets.map(s => s.id),
   privateSubnetIds: privateSubnets.map(s => s.id),
+  nodeAssociatePublicIpAddress: false,
   encryptionConfigKeyArn: kmsKey.arn,
   defaultAddonsToRemove: ['kube-proxy'],
   skipDefaultNodeGroup: true,
@@ -159,7 +160,6 @@ const {
     enablePrefixDelegation: true
   },
   nodeGroupOptions: {
-    nodeAssociatePublicIpAddress: false,
     taints: {
       'node.cilium.io/agent-not-ready': {
         value: 'true',
@@ -174,9 +174,6 @@ const {
       groups: ['system:bootstrappers', 'system:nodes']
     }
   ],
-  tags: {
-    'karpenter.sh/discovery': stackName
-  }
 })
 
 // === EKS === Node Group ===
@@ -185,9 +182,10 @@ const highPriorityNodeGroupName = `${stackName}-high-priority`
 const highPriorityNodeGroup = new eks.ManagedNodeGroup(highPriorityNodeGroupName, {
   nodeGroupName: highPriorityNodeGroupName,
   cluster,
-  instanceTypes: ['m7g.medium', 't4g.medium', 'c7g.medium'],
+  instanceTypes: ['m7g.medium', 't4g.medium', 'c7g.medium', 'c7gd.medium'],
   capacityType: 'SPOT',
   amiType: 'BOTTLEROCKET_ARM_64',
+  // amiType: 'AL2023_ARM_64_STANDARD',
   nodeRole: cluster.instanceRoles[0],
   scalingConfig: {
     minSize: 3,
@@ -207,26 +205,6 @@ const coreDNSAddon = new aws.eks.Addon(coreDNSAddonName, {
     kubernetesVersion: version,
     mostRecent: true
   })).version,
-  configurationValues: JSON.stringify({
-    corefile: `.:53 {
-      errors
-      log
-      health {
-        lameduck 30s
-      }
-      ready
-      kubernetes cluster.local in-addr.arpa ip6.arpa {
-        pods insecure
-        fallthrough in-addr.arpa ip6.arpa
-      }
-      prometheus :9153
-      forward . /etc/resolv.conf
-      cache 30
-      loop
-      reload
-      loadbalance
-    }`
-  }),
   resolveConflictsOnCreate: 'OVERWRITE'
 })
 
@@ -793,7 +771,6 @@ const karpenter = new k8s.helm.v3.Release('karpenter', {
   chart: 'oci://public.ecr.aws/karpenter/karpenter',
   namespace: 'kube-system',
   values: {
-    logLevel: 'debug',
     settings: {
       clusterName: eksCluster.name,
       interruptionQueue: EC2InterruptionQueue.name,
@@ -802,7 +779,7 @@ const karpenter = new k8s.helm.v3.Release('karpenter', {
       }
     }
   }
-}, { provider })
+}, { provider, dependsOn: [highPriorityNodeGroup] })
 
 // === EKS === Karpenter === Node Class ===
 
@@ -815,6 +792,7 @@ const defaultNodeClass = new k8s.apiextensions.CustomResource(defaultNodeClassNa
   },
   spec: {
     amiFamily: 'Bottlerocket',
+    // amiFamily: 'AL2023',
     role: eksNodeRole.name,
     associatePublicIPAddress: false,
     subnetSelectorTerms: [
@@ -827,7 +805,7 @@ const defaultNodeClass = new k8s.apiextensions.CustomResource(defaultNodeClassNa
     securityGroupSelectorTerms: [
       {
         tags: {
-          'karpenter.sh/discovery': eksCluster.name
+          'aws:eks:cluster-name': eksCluster.name
         }
       }
     ]
@@ -868,51 +846,58 @@ const defaultNodePool = new k8s.apiextensions.CustomResource(defaultNodePoolName
           kind: 'EC2NodeClass',
           name: defaultNodeClass.metadata.name
         },
+        // https://github.com/bottlerocket-os/bottlerocket/issues/1721
+        // TODO: ensure all pods has requests and limits
+        // kubelet: {
+        //   podsPerCore: 20,
+        //   maxPods: 110
+        // },
       }
     },
     limits: {
-      cpu: 10
+      cpu: "16",
+      memory: '32Gi'
     },
     disruption: {
       consolidationPolicy: 'WhenUnderutilized',
-      expireAfter: '48h'
+      expireAfter: `${24 * 7}h`,
     }
   }
 }, { provider, dependsOn: [karpenter] })
 
 // === EKS === ArgoCD ===
 
-// const argocd = new k8s.helm.v3.Release('argocd', {
-//   name: 'argocd',
-//   chart: 'argo-cd',
-//   namespace: 'argocd',
-//   repositoryOpts: {
-//     repo: 'https://argoproj.github.io/argo-helm'
-//   },
-//   values: {
-//     'redis-ha': {
-//       enabled: true
-//     },
-//     controller: {
-//       replicas: 1
-//     },
-//     server: {
-//       autoscaling: {
-//         enabled: true,
-//         minReplicas: 2
-//       }
-//     },
-//     repoServer: {
-//       autoscaling: {
-//         enabled: true,
-//         minReplicas: 2
-//       }
-//     },
-//     applicationSet: {
-//       replicas: 2
-//     }
-//   },
-//   createNamespace: true
-// }, { provider, customTimeouts: { create: '30m' } })
+const argocd = new k8s.helm.v3.Release('argocd', {
+  name: 'argocd',
+  chart: 'argo-cd',
+  namespace: 'argocd',
+  repositoryOpts: {
+    repo: 'https://argoproj.github.io/argo-helm'
+  },
+  values: {
+    'redis-ha': {
+      enabled: true
+    },
+    controller: {
+      replicas: 1
+    },
+    server: {
+      autoscaling: {
+        enabled: true,
+        minReplicas: 2
+      }
+    },
+    repoServer: {
+      autoscaling: {
+        enabled: true,
+        minReplicas: 2
+      }
+    },
+    applicationSet: {
+      replicas: 2
+    }
+  },
+  createNamespace: true
+}, { provider })
 
 export const kubeconfig = kubeconfigJson
