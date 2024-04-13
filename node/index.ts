@@ -155,6 +155,9 @@ const {
   encryptionConfigKeyArn: kmsKey.arn,
   defaultAddonsToRemove: ['kube-proxy'],
   skipDefaultNodeGroup: true,
+  vpcCniOptions: {
+    enablePrefixDelegation: true
+  },
   nodeGroupOptions: {
     nodeAssociatePublicIpAddress: false,
     taints: {
@@ -182,12 +185,12 @@ const highPriorityNodeGroupName = `${stackName}-high-priority`
 const highPriorityNodeGroup = new eks.ManagedNodeGroup(highPriorityNodeGroupName, {
   nodeGroupName: highPriorityNodeGroupName,
   cluster,
-  instanceTypes: ['m7g.medium', 't4g.medium'],
+  instanceTypes: ['m7g.medium', 't4g.medium', 'c7g.medium'],
   capacityType: 'SPOT',
   amiType: 'BOTTLEROCKET_ARM_64',
   nodeRole: cluster.instanceRoles[0],
   scalingConfig: {
-    minSize: 0,
+    minSize: 3,
     maxSize: 3,
     desiredSize: 3
   },
@@ -204,6 +207,26 @@ const coreDNSAddon = new aws.eks.Addon(coreDNSAddonName, {
     kubernetesVersion: version,
     mostRecent: true
   })).version,
+  configurationValues: JSON.stringify({
+    corefile: `.:53 {
+      errors
+      log
+      health {
+        lameduck 30s
+      }
+      ready
+      kubernetes cluster.local in-addr.arpa ip6.arpa {
+        pods insecure
+        fallthrough in-addr.arpa ip6.arpa
+      }
+      prometheus :9153
+      forward . /etc/resolv.conf
+      cache 30
+      loop
+      reload
+      loadbalance
+    }`
+  }),
   resolveConflictsOnCreate: 'OVERWRITE'
 })
 
@@ -244,7 +267,6 @@ const ebsCsiDriverRole = new aws.iam.Role(ebsCsiDriverRoleName, {
   assumeRolePolicy: aws.iam.assumeRolePolicyForPrincipal({
     Service: 'ec2.amazonaws.com'
   }),
-
 })
 const policyAttachment = new aws.iam.RolePolicyAttachment(`${ebsCsiDriverRoleName}-attachment`, {
   role: ebsCsiDriverRole,
@@ -771,6 +793,7 @@ const karpenter = new k8s.helm.v3.Release('karpenter', {
   chart: 'oci://public.ecr.aws/karpenter/karpenter',
   namespace: 'kube-system',
   values: {
+    logLevel: 'debug',
     settings: {
       clusterName: eksCluster.name,
       interruptionQueue: EC2InterruptionQueue.name,
@@ -779,7 +802,7 @@ const karpenter = new k8s.helm.v3.Release('karpenter', {
       }
     }
   }
-}, { provider, dependsOn: [highPriorityNodeGroup] })
+}, { provider })
 
 // === EKS === Karpenter === Node Class ===
 
@@ -844,7 +867,7 @@ const defaultNodePool = new k8s.apiextensions.CustomResource(defaultNodePoolName
           apiVersion: 'karpenter.k8s.aws/v1beta1',
           kind: 'EC2NodeClass',
           name: defaultNodeClass.metadata.name
-        }
+        },
       }
     },
     limits: {
