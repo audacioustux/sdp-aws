@@ -195,17 +195,19 @@ const {
   ],
 });
 
-privateSubnets.map((subnet, index) => {
-  new aws.ec2.Tag(nm("PrivateSubnetTag"), {
-    key: "karpenter.sh/discovery",
-    value: eksCluster.name,
-    resourceId: subnet.id,
+privateSubnets.map((subnet, _) => {
+  subnet.id.apply((subnetId) => {
+    new aws.ec2.Tag(nm(`${subnetId}-tag`), {
+      key: "karpenter.sh/discovery",
+      value: eksCluster.name,
+      resourceId: subnetId,
+    });
   });
 });
 
 // === EKS === Node Group ===
 
-const highPriorityNodeGroupName = "high-priority-node-group";
+const highPriorityNodeGroupName = nm("high-priority");
 const highPriorityNodeGroup = new eks.ManagedNodeGroup(
   highPriorityNodeGroupName,
   {
@@ -221,21 +223,17 @@ const highPriorityNodeGroup = new eks.ManagedNodeGroup(
       maxSize: 3,
       desiredSize: 3,
     },
-  },
-  {
-    parent: eksCluster,
   }
 );
 
 // === EKS === Addons === CoreDNS ===
 
-const coreDNSAddonName = "coredns";
-new aws.eks.Addon(coreDNSAddonName, {
-  addonName: coreDNSAddonName,
+new aws.eks.Addon(nm("coredns"), {
+  addonName: "coredns",
   clusterName: eksCluster.name,
   addonVersion: eksCluster.version.apply((version) =>
     aws.eks.getAddonVersion({
-      addonName: coreDNSAddonName,
+      addonName: "coredns",
       kubernetesVersion: version,
       mostRecent: true,
     })
@@ -245,14 +243,13 @@ new aws.eks.Addon(coreDNSAddonName, {
 
 // === EKS === Addons === VPC CNI ===
 
-const vpcCniAddonName = "vpc-cni";
-const vpcCniAddon = new aws.eks.Addon(vpcCniAddonName, {
-  addonName: vpcCniAddonName,
+const vpcCniAddon = new aws.eks.Addon(nm("vpc-cni"), {
+  addonName: "vpc-cni",
   clusterName: eksCluster.name,
   addonVersion: eksCluster.version.apply(
     async (kubernetesVersion) =>
       await aws.eks.getAddonVersion({
-        addonName: vpcCniAddonName,
+        addonName: "vpc-cni",
         kubernetesVersion,
         mostRecent: true,
       })
@@ -260,7 +257,7 @@ const vpcCniAddon = new aws.eks.Addon(vpcCniAddonName, {
   resolveConflictsOnCreate: "OVERWRITE",
 });
 const awsNodeDaemonSetPatch = new k8s.apps.v1.DaemonSetPatch(
-  "aws-node-patch",
+  nm("aws-node-daemonset"),
   {
     metadata: {
       namespace: "kube-system",
@@ -291,14 +288,13 @@ new aws.iam.RolePolicyAttachment(`${ebsCsiDriverRoleName}-attachment`, {
   role: ebsCsiDriverRole,
   policyArn: "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy",
 });
-const csiDriverAddonName = "aws-ebs-csi-driver";
-new aws.eks.Addon(csiDriverAddonName, {
-  addonName: csiDriverAddonName,
+new aws.eks.Addon(nm("ebs-csi-driver"), {
+  addonName: "aws-ebs-csi-driver",
   clusterName: eksCluster.name,
   addonVersion: eksCluster.version.apply(
     async (kubernetesVersion) =>
       await aws.eks.getAddonVersion({
-        addonName: csiDriverAddonName,
+        addonName: "aws-ebs-csi-driver",
         kubernetesVersion,
         mostRecent: true,
       })
@@ -309,14 +305,13 @@ new aws.eks.Addon(csiDriverAddonName, {
 
 // === EKS === Addons === Pod Identity Agent ===
 
-const podIdentityAgentAddonName = "eks-pod-identity-agent";
-new aws.eks.Addon(podIdentityAgentAddonName, {
-  addonName: podIdentityAgentAddonName,
+new aws.eks.Addon(nm("pod-identity-agent"), {
+  addonName: "eks-pod-identity-agent",
   clusterName: eksCluster.name,
   addonVersion: eksCluster.version.apply(
     async (kubernetesVersion) =>
       await aws.eks.getAddonVersion({
-        addonName: podIdentityAgentAddonName,
+        addonName: "eks-pod-identity-agent",
         kubernetesVersion,
         mostRecent: true,
       })
@@ -334,7 +329,7 @@ const k8sServiceHosts = k8s.core.v1.Endpoints.get(
   subsets.map((subset) => subset.addresses.map((address) => address.ip)).flat()
 );
 new k8s.helm.v3.Release(
-  "cilium",
+  nm("cilium"),
   {
     name: "cilium",
     chart: "cilium",
@@ -380,7 +375,7 @@ new k8s.helm.v3.Release(
       },
     },
   },
-  { provider, dependsOn: [awsNodeDaemonSetPatch] }
+  { provider }
 );
 
 // === EC2 === Interruption Queue ===
@@ -828,7 +823,7 @@ new aws.iam.RolePolicyAttachment(karpenterControllerRoleName, {
   role: karpenterControllerRole,
 });
 
-new aws.eks.PodIdentityAssociation("pod-identity-association", {
+new aws.eks.PodIdentityAssociation(nm("pod-identity-association"), {
   clusterName: eksCluster.name,
   namespace: "kube-system",
   serviceAccount: "karpenter",
@@ -838,7 +833,7 @@ new aws.eks.PodIdentityAssociation("pod-identity-association", {
 // === EKS === Karpenter ===
 
 const karpenter = new k8s.helm.v3.Release(
-  "karpenter",
+  nm("karpenter"),
   {
     name: "karpenter",
     chart: "oci://public.ecr.aws/karpenter/karpenter",
@@ -853,19 +848,18 @@ const karpenter = new k8s.helm.v3.Release(
       },
     },
   },
-  { provider, dependsOn: [highPriorityNodeGroup] }
+  { provider }
 );
 
 // === EKS === Karpenter === Node Class ===
 
-const defaultNodeClassName = `default-node-class`;
 const defaultNodeClass = new k8s.apiextensions.CustomResource(
-  defaultNodeClassName,
+  nm("default-node-class"),
   {
     apiVersion: "karpenter.k8s.aws/v1beta1",
     kind: "EC2NodeClass",
     metadata: {
-      name: defaultNodeClassName,
+      name: "default",
     },
     spec: {
       amiFamily: "Bottlerocket",
@@ -893,14 +887,13 @@ const defaultNodeClass = new k8s.apiextensions.CustomResource(
 
 // === EKS === Karpenter === Node Pool ===
 
-const defaultNodePoolName = `default-node-pool`;
 new k8s.apiextensions.CustomResource(
-  defaultNodePoolName,
+  nm("default-node-pool"),
   {
     apiVersion: "karpenter.sh/v1beta1",
     kind: "NodePool",
     metadata: {
-      name: defaultNodePoolName,
+      name: "default",
     },
     spec: {
       template: {
@@ -950,7 +943,7 @@ new k8s.apiextensions.CustomResource(
 // === EKS === ArgoCD ===
 
 new k8s.helm.v3.Release(
-  "argocd",
+  nm("argocd"),
   {
     name: "argocd",
     chart: "argo-cd",
