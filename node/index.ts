@@ -2,18 +2,19 @@ import * as aws from "@pulumi/aws";
 import * as pulumi from "@pulumi/pulumi";
 import * as eks from "@pulumi/eks";
 import * as k8s from "@pulumi/kubernetes";
-import * as awsx from "@pulumi/awsx";
 
-const stackName = `${pulumi.getProject()}-${pulumi.getStack()}`;
+const nm = (name: String) =>
+  `${pulumi.getProject()}-${pulumi.getStack()}-${name}`;
 
 // === VPC ===
 
-const vpc = new aws.ec2.Vpc(stackName, {
+const vpcName = nm("vpc");
+const vpc = new aws.ec2.Vpc(vpcName, {
   cidrBlock: "10.0.0.0/16",
   enableDnsSupport: true,
   enableDnsHostnames: true,
   tags: {
-    Name: stackName,
+    Name: vpcName,
   },
 });
 
@@ -23,7 +24,7 @@ const availabilityZones = await aws.getAvailabilityZones({
   state: "available",
 });
 const publicSubnets = availabilityZones.names.map((az, index) => {
-  const subnetName = `${stackName}-public-${index}`;
+  const subnetName = nm(`public-${index}`);
   return new aws.ec2.Subnet(subnetName, {
     vpcId: vpc.id,
     cidrBlock: `10.0.${index}.0/24`,
@@ -36,7 +37,7 @@ const publicSubnets = availabilityZones.names.map((az, index) => {
 });
 
 const privateSubnets = availabilityZones.names.map((az, index) => {
-  const subnetName = `${stackName}-private-${index}`;
+  const subnetName = nm(`private-${index}`);
   return new aws.ec2.Subnet(subnetName, {
     vpcId: vpc.id,
     cidrBlock: `10.0.${index + 10}.0/24`,
@@ -44,41 +45,43 @@ const privateSubnets = availabilityZones.names.map((az, index) => {
     mapPublicIpOnLaunch: false,
     tags: {
       Name: subnetName,
-      "karpenter.sh/discovery": stackName,
     },
   });
 });
 
 // === VPC === Internet Gateway ===
 
-const internetGateway = new aws.ec2.InternetGateway(stackName, {
+const internetGatewayName = nm("igw");
+const internetGateway = new aws.ec2.InternetGateway(internetGatewayName, {
   vpcId: vpc.id,
   tags: {
-    Name: stackName,
+    Name: internetGatewayName,
   },
 });
 
 // === VPC === NAT Gateway ===
 
-const eip = new aws.ec2.Eip(stackName, {
+const eipName = nm("eip");
+const eip = new aws.ec2.Eip(eipName, {
   domain: "vpc",
   tags: {
-    Name: stackName,
+    Name: eipName,
   },
 });
 
-const natGateway = new aws.ec2.NatGateway(stackName, {
+const natGatewayName = nm("nat");
+const natGateway = new aws.ec2.NatGateway(natGatewayName, {
   subnetId: publicSubnets[0].id,
   allocationId: eip.id,
   connectivityType: "public",
   tags: {
-    Name: stackName,
+    Name: natGatewayName,
   },
 });
 
 // === VPC === Route Tables ===
 
-const publicRouteTableName = `${stackName}-public`;
+const publicRouteTableName = nm("public");
 const publicRouteTable = new aws.ec2.RouteTable(publicRouteTableName, {
   vpcId: vpc.id,
   routes: [
@@ -102,7 +105,7 @@ publicSubnets.map((subnet, index) => {
   );
 });
 
-const privateRouteTableName = `${stackName}-private`;
+const privateRouteTableName = nm("private");
 const privateRouteTable = new aws.ec2.RouteTable(privateRouteTableName, {
   vpcId: vpc.id,
   routes: [
@@ -128,18 +131,18 @@ privateSubnets.map((subnet, index) => {
 
 // === KMS ===
 
-const kmsKey = new aws.kms.Key(stackName, {
-  description: `KMS key for ${stackName}`,
+const kmsKeyName = nm("kms");
+const kmsKey = new aws.kms.Key(kmsKeyName, {
   deletionWindowInDays: 10,
 });
-new aws.kms.Alias(stackName, {
-  name: `alias/${stackName}`,
+new aws.kms.Alias(kmsKeyName, {
+  name: `alias/${kmsKeyName}`,
   targetKeyId: kmsKey.id,
 });
 
 // === EKS === Node Role ===
 
-const eksNodeRoleName = `${stackName}-node-role`;
+const eksNodeRoleName = nm("node-role");
 const eksNodeRole = new aws.iam.Role(eksNodeRoleName, {
   assumeRolePolicy: aws.iam.assumeRolePolicyForPrincipal({
     Service: "ec2.amazonaws.com",
@@ -155,13 +158,14 @@ const eksNodeRole = new aws.iam.Role(eksNodeRoleName, {
 
 // === EKS === Cluster ===
 
+const eksClusterName = nm("eks");
 const {
   provider,
   eksCluster,
   core: cluster,
   kubeconfigJson,
-} = new eks.Cluster(stackName, {
-  name: stackName,
+} = new eks.Cluster(eksClusterName, {
+  name: eksClusterName,
   version: "1.29",
   vpcId: vpc.id,
   createOidcProvider: true,
@@ -191,9 +195,17 @@ const {
   ],
 });
 
+privateSubnets.map((subnet, index) => {
+  new aws.ec2.Tag(nm("PrivateSubnetTag"), {
+    key: "karpenter.sh/discovery",
+    value: eksCluster.name,
+    resourceId: subnet.id,
+  });
+});
+
 // === EKS === Node Group ===
 
-const highPriorityNodeGroupName = `${stackName}-high-priority`;
+const highPriorityNodeGroupName = "high-priority-node-group";
 const highPriorityNodeGroup = new eks.ManagedNodeGroup(
   highPriorityNodeGroupName,
   {
@@ -209,6 +221,9 @@ const highPriorityNodeGroup = new eks.ManagedNodeGroup(
       maxSize: 3,
       desiredSize: 3,
     },
+  },
+  {
+    parent: eksCluster,
   }
 );
 
@@ -266,7 +281,7 @@ const awsNodeDaemonSetPatch = new k8s.apps.v1.DaemonSetPatch(
 
 // === EKS === Addons === EBS CSI Driver ===
 
-const ebsCsiDriverRoleName = `${stackName}-ebs-csi-driver-irsa`;
+const ebsCsiDriverRoleName = nm("ebs-csi-driver-irsa");
 const ebsCsiDriverRole = new aws.iam.Role(ebsCsiDriverRoleName, {
   assumeRolePolicy: aws.iam.assumeRolePolicyForPrincipal({
     Service: "ec2.amazonaws.com",
@@ -370,7 +385,7 @@ new k8s.helm.v3.Release(
 
 // === EC2 === Interruption Queue ===
 
-const EC2InterruptionQueueName = `${stackName}-ec2-interruption-queue`;
+const EC2InterruptionQueueName = nm("ec2-interruption-queue");
 const EC2InterruptionQueue = new aws.sqs.Queue(EC2InterruptionQueueName, {
   messageRetentionSeconds: 300,
   sqsManagedSseEnabled: true,
@@ -393,7 +408,7 @@ new aws.sqs.QueuePolicy(EC2InterruptionQueuePolicyName, {
   },
 });
 
-const scheduledChangeRuleName = `${stackName}-scheduled-change-rule`;
+const scheduledChangeRuleName = nm("scheduled-change-rule");
 const scheduledChangeRule = new aws.cloudwatch.EventRule(
   scheduledChangeRuleName,
   {
@@ -408,7 +423,7 @@ new aws.cloudwatch.EventTarget(scheduledChangeRuleName, {
   arn: EC2InterruptionQueue.arn,
 });
 
-const spotInterruptionRuleName = `${stackName}-spot-interruption-rule`;
+const spotInterruptionRuleName = nm("spot-interruption-rule");
 const spotInterruptionRule = new aws.cloudwatch.EventRule(
   spotInterruptionRuleName,
   {
@@ -423,7 +438,7 @@ new aws.cloudwatch.EventTarget(spotInterruptionRuleName, {
   arn: EC2InterruptionQueue.arn,
 });
 
-const rebalanceRuleName = `${stackName}-rebalance-rule`;
+const rebalanceRuleName = nm("rebalance-rule");
 const rebalanceRule = new aws.cloudwatch.EventRule(rebalanceRuleName, {
   eventPattern: JSON.stringify({
     source: ["aws.ec2"],
@@ -435,7 +450,7 @@ new aws.cloudwatch.EventTarget(rebalanceRuleName, {
   arn: EC2InterruptionQueue.arn,
 });
 
-const instanceStateChangeRuleName = `${stackName}-instance-state-change-rule`;
+const instanceStateChangeRuleName = nm("instance-state-change-rule");
 const instanceStateChangeRule = new aws.cloudwatch.EventRule(
   instanceStateChangeRuleName,
   {
@@ -774,7 +789,7 @@ const accountId = await aws
   .getCallerIdentity()
   .then((identity) => identity.accountId);
 
-const karpenterControllerPolicyName = `${stackName}-karpenter-controller-policy`;
+const karpenterControllerPolicyName = nm("karpenter-controller-policy");
 const KarpenterControllerPolicy = new aws.iam.Policy(
   karpenterControllerPolicyName,
   {
@@ -793,7 +808,7 @@ const KarpenterControllerPolicy = new aws.iam.Policy(
       ),
   }
 );
-const karpenterControllerRoleName = `${stackName}-karpenter-controller-role`;
+const karpenterControllerRoleName = nm("karpenter-controller-role");
 const karpenterControllerRole = new aws.iam.Role(karpenterControllerRoleName, {
   assumeRolePolicy: {
     Version: "2012-10-17",
