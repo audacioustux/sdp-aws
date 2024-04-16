@@ -7,14 +7,19 @@
     "vscode": {
       "extensions": [
         "mutantdino.resourcemonitor",
-        "Gruntfuggly.todo-tree"
+        "Gruntfuggly.todo-tree",
+        "esbenp.prettier-vscode",
+        "dbaeumer.vscode-eslint"
       ],
       "settings": {
         "git.autofetch": true,
         "files.autoSave": "onFocusChange",
         "editor.formatOnSave": true,
         "editor.formatOnPaste": true,
-        "resmon.show.cpufreq": false
+        "resmon.show.cpufreq": false,
+        "[typescript]": {
+          "editor.defaultFormatter": "esbenp.prettier-vscode"
+        }
       }
     }
   },
