@@ -5,6 +5,19 @@ tasks:
     cmd: task --list-all
     silent: true
 
+  sdp:deps:
+    dir: sdp
+    cmd: pnpm install
+
+  sdp:format:
+    deps: [sdp:deps]
+    dir: sdp
+    cmd: pnpm run format
+
   sdp:up:
+    deps: [sdp:deps]
     dir: sdp
     cmd: pulumi up -s prod
+  
+  format:
+    deps: [sdp:format]
