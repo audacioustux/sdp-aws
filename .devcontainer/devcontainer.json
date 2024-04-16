@@ -7,8 +7,7 @@
     "vscode": {
       "extensions": [
         "mutantdino.resourcemonitor",
-        "Gruntfuggly.todo-tree",
-        "esbenp.prettier-vscode"
+        "Gruntfuggly.todo-tree"
       ],
       "settings": {
         "git.autofetch": true,

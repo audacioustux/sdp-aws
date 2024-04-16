@@ -1,7 +1,6 @@
 {
   "compilerOptions": {
     "strict": true,
-    "outDir": "bin",
     "target": "ESNext",
     "module": "ESNext",
     "moduleResolution": "node",
@@ -10,9 +9,13 @@
     "pretty": true,
     "noFallthroughCasesInSwitch": true,
     "noImplicitReturns": true,
-    "forceConsistentCasingInFileNames": true
+    "forceConsistentCasingInFileNames": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "isolatedModules": true,
   },
   "files": [
     "index.ts"
-  ]
+  ],
 }

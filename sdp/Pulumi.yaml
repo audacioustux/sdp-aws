@@ -1,10 +1,12 @@
 name: sdp
 description: Software Delivery Platform
 config:
+  pulumi:disable-default-providers:
+    - kubernetes
   pulumi:tags:
     value:
       pulumi:template: aws-typescript
-runtime: 
+runtime:
   name: nodejs
   options:
     nodeargs: "--import ./register.js"
