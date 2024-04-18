@@ -1,23 +1,16 @@
-version: '3'
+version: "3"
+
+dotenv: [".env"]
+
+includes:
+  sdp: sdp
 
 tasks:
   default:
     cmd: task --list-all
     silent: true
 
-  sdp:deps:
-    dir: sdp
-    cmd: pnpm install
+  ecr:login: aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin 343301376154.dkr.ecr.ap-south-1.amazonaws.com
 
-  sdp:format:
-    deps: [sdp:deps]
-    dir: sdp
-    cmd: pnpm run format
-
-  sdp:up:
-    deps: [sdp:deps]
-    dir: sdp
-    cmd: pulumi up -s prod
-  
   format:
     deps: [sdp:format]

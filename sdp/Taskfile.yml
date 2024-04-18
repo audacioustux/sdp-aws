@@ -1,0 +1,16 @@
+version: "3"
+
+tasks:
+  deps:
+    dir: sdp
+    cmd: pnpm install
+
+  format:
+    deps: [deps]
+    dir: sdp
+    cmd: pnpm run format
+
+  up:
+    deps: [deps]
+    dir: sdp
+    cmd: pulumi up -s prod
