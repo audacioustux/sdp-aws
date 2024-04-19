@@ -11,6 +11,8 @@ tasks:
     silent: true
 
   ecr:login: aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin 343301376154.dkr.ecr.ap-south-1.amazonaws.com
+  argocd:pass: kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
+  argocd:expose: kubectl port-forward svc/argocd-server -n argocd 8080:443
 
   format:
     deps: [sdp:format]

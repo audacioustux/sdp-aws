@@ -26,6 +26,7 @@
     "@pulumi/eks": "^2.2.1",
     "@pulumi/kubernetes": "^4.9.1",
     "@pulumi/pulumi": "^3.0.0",
-    "ts-node": "^10.9.2"
+    "ts-node": "^10.9.2",
+    "yaml": "^2.4.1"
   }
 }

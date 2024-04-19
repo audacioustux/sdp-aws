@@ -3,6 +3,7 @@ import * as pulumi from '@pulumi/pulumi'
 import * as eks from '@pulumi/eks'
 import * as k8s from '@pulumi/kubernetes'
 import { registerAutoTags } from './utils/autotag.ts'
+import { objectToYaml } from './utils/yaml.ts'
 
 const project = pulumi.getProject()
 const stack = pulumi.getStack()
@@ -918,6 +919,12 @@ new k8s.apiextensions.CustomResource(
 
 // === EKS === ArgoCD ===
 
+const gitConfig = new pulumi.Config('git')
+const gitRepo = gitConfig.require('repo')
+const gitPath = gitConfig.require('path')
+const gitUsername = gitConfig.require('username')
+const gitPassword = gitConfig.requireSecret('password')
+
 new k8s.helm.v3.Release(
 	nm('argocd'),
 	{
@@ -928,6 +935,15 @@ new k8s.helm.v3.Release(
 			repo: 'https://argoproj.github.io/argo-helm',
 		},
 		values: {
+			configs: {
+				repositories: {
+					sdp: {
+						url: gitRepo,
+						username: gitUsername,
+						password: gitPassword,
+					},
+				},
+			},
 			'redis-ha': {
 				enabled: true,
 			},
@@ -953,6 +969,149 @@ new k8s.helm.v3.Release(
 		createNamespace: true,
 	},
 	{ provider },
+)
+
+const argoProject = new k8s.apiextensions.CustomResource(
+	nm('argocd-project'),
+	{
+		apiVersion: 'argoproj.io/v1alpha1',
+		kind: 'AppProject',
+		metadata: {
+			namespace: 'argocd',
+			name: 'sdp',
+		},
+		spec: {
+			clusterResourceWhitelist: [
+				{
+					group: '*',
+					kind: '*',
+				},
+			],
+			description: 'default',
+			destinations: [
+				{
+					namespace: '*',
+					server: 'https://kubernetes.default.svc',
+				},
+			],
+			orphanedResources: {
+				warn: true,
+			},
+			sourceRepos: ['*'],
+		},
+	},
+	{ provider },
+)
+
+const argoApplication = new k8s.apiextensions.CustomResource(
+	nm('argocd-application'),
+	{
+		apiVersion: 'argoproj.io/v1alpha1',
+		kind: 'Application',
+		metadata: {
+			namespace: 'argocd',
+			name: 'sdp',
+			labels: {
+				'application-type': 'bootstrapper',
+			},
+		},
+		spec: {
+			destination: {
+				namespace: 'argocd',
+				server: 'https://kubernetes.default.svc',
+			},
+			project: 'sdp',
+			source: {
+				repoURL: gitRepo,
+				path: `${gitPath}/apps`,
+				targetRevision: 'main',
+				directory: {
+					recurse: true,
+				},
+			},
+			syncPolicy: {
+				automated: {
+					selfHeal: true,
+				},
+			},
+		},
+	},
+	{ provider, dependsOn: [argoProject] },
+)
+
+const renderAppsYaml = new k8s.Provider('render-apps-yaml', {
+	renderYamlToDirectory: 'apps',
+})
+
+// const argoApplication1 = new k8s.apiextensions.CustomResource(
+// 	nm('argocd-application1'),
+// 	{
+// 		apiVersion: 'argoproj.io/v1alpha1',
+// 		kind: 'Application',
+// 		metadata: {
+// 			namespace: 'argocd',
+// 			name: 'app1',
+// 			labels: {
+// 				'application-type': 'deployment',
+// 			},
+// 		},
+// 		spec: {
+// 			destination: {
+// 				namespace: 'demo',
+// 				server: 'https://kubernetes.default.svc',
+// 			},
+// 			project: 'sdp',
+// 			source: {
+// 				path: `${gitPath}/apps/app1`,
+// 				repoURL: gitRepo,
+// 			},
+// 			syncPolicy: {
+// 				automated: {
+// 					prune: true,
+// 					selfHeal: true,
+// 				},
+// 				syncOptions: ['Validate=false', 'CreateNamespace=true', 'ServerSideApply=false'],
+// 			},
+// 		},
+// 	},
+// 	{ provider: renderAppsYaml },
+// )
+
+const certManager = new k8s.apiextensions.CustomResource(
+	nm('cert-manager'),
+	{
+		apiVersion: 'argoproj.io/v1alpha1',
+		kind: 'Application',
+		metadata: {
+			namespace: 'argocd',
+			name: 'cert-manager',
+		},
+		spec: {
+			destination: {
+				namespace: 'cert-manager',
+				server: 'https://kubernetes.default.svc',
+			},
+			project: 'sdp',
+			source: {
+				repoURL: 'https://charts.jetstack.io',
+				chart: 'cert-manager',
+				targetRevision: '*',
+				helm: {
+					values: objectToYaml({
+						installCRDs: true,
+					}),
+				},
+			},
+			syncPolicy: {
+				automated: {
+					prune: true,
+					selfHeal: true,
+				},
+				syncOptions: ['Validate=false', 'CreateNamespace=true', 'ServerSideApply=false'],
+			},
+		},
+	},
+	{ provider: renderAppsYaml },
 )
 
 export const kubeconfig = kubeconfigJson
