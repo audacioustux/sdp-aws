@@ -1,7 +1,7 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: hello-world
+  name: game-2048
   namespace: argocd
 spec:
   destination:
@@ -9,7 +9,7 @@ spec:
     server: https://kubernetes.default.svc
   project: sdp
   source:
-    path: sdp/resources/hello-world
+    path: sdp/resources/game-2048
     repoURL: https://github.com/audacioustux/zeroaws
   syncPolicy:
     automated:
