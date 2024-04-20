@@ -5,7 +5,7 @@ metadata:
   namespace: argocd
 spec:
   destination:
-    namespace: default
+    namespace: miscellaneous
     server: https://kubernetes.default.svc
   project: sdp
   source:

@@ -20,7 +20,7 @@ const helloWorld = new k8s.apiextensions.CustomResource(
 		},
 		spec: {
 			destination: {
-				namespace: 'default',
+				namespace: 'miscellaneous',
 				server: 'https://kubernetes.default.svc',
 			},
 			project: 'sdp',
