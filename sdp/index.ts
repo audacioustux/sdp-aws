@@ -3,18 +3,16 @@ import * as pulumi from '@pulumi/pulumi'
 import * as eks from '@pulumi/eks'
 import * as k8s from '@pulumi/kubernetes'
 import { registerAutoTags } from './utils/autotag.ts'
-import { objectToYaml } from './utils/yaml.ts'
-
-const project = pulumi.getProject()
-const stack = pulumi.getStack()
+import * as config from './config.ts'
 
 // Automatically inject tags.
 registerAutoTags({
-	'pulumi:Project': project,
-	'pulumi:Stack': stack,
+	'pulumi:Organization': config.pulumi.organization,
+	'pulumi:Project': config.pulumi.project,
+	'pulumi:Stack': config.pulumi.stack,
 })
 
-const nm = (name: string) => `${project}-${stack}-${name}`
+const nm = (name: string) => `${config.pulumi.project}-${config.pulumi.stack}-${name}`
 
 // === VPC ===
 
@@ -347,7 +345,7 @@ new k8s.helm.v3.Release(
 			k8sServiceHost: k8sServiceHosts[0],
 			ingressController: {
 				enabled: true,
-				loadbalancerMode: 'dedicated',
+				loadbalancerMode: 'shared',
 				default: true,
 			},
 			hubble: {
@@ -919,12 +917,6 @@ new k8s.apiextensions.CustomResource(
 
 // === EKS === ArgoCD ===
 
-const gitConfig = new pulumi.Config('git')
-const gitRepo = gitConfig.require('repo')
-const gitPath = gitConfig.require('path')
-const gitUsername = gitConfig.require('username')
-const gitPassword = gitConfig.requireSecret('password')
-
 new k8s.helm.v3.Release(
 	nm('argocd'),
 	{
@@ -938,9 +930,9 @@ new k8s.helm.v3.Release(
 			configs: {
 				repositories: {
 					sdp: {
-						url: gitRepo,
-						username: gitUsername,
-						password: gitPassword,
+						url: config.git.repo,
+						username: config.git.username,
+						password: config.git.password,
 					},
 				},
 			},
@@ -1022,8 +1014,8 @@ const argoApplication = new k8s.apiextensions.CustomResource(
 			},
 			project: 'sdp',
 			source: {
-				repoURL: gitRepo,
-				path: `${gitPath}/apps`,
+				repoURL: config.git.repo,
+				path: `${config.git.path}/apps`,
 				targetRevision: 'main',
 				directory: {
 					recurse: true,
@@ -1039,79 +1031,6 @@ const argoApplication = new k8s.apiextensions.CustomResource(
 	{ provider, dependsOn: [argoProject] },
 )
 
-const renderAppsYaml = new k8s.Provider('render-apps-yaml', {
-	renderYamlToDirectory: 'apps',
-})
-
-// const argoApplication1 = new k8s.apiextensions.CustomResource(
-// 	nm('argocd-application1'),
-// 	{
-// 		apiVersion: 'argoproj.io/v1alpha1',
-// 		kind: 'Application',
-// 		metadata: {
-// 			namespace: 'argocd',
-// 			name: 'app1',
-// 			labels: {
-// 				'application-type': 'deployment',
-// 			},
-// 		},
-// 		spec: {
-// 			destination: {
-// 				namespace: 'demo',
-// 				server: 'https://kubernetes.default.svc',
-// 			},
-// 			project: 'sdp',
-// 			source: {
-// 				path: `${gitPath}/apps/app1`,
-// 				repoURL: gitRepo,
-// 			},
-// 			syncPolicy: {
-// 				automated: {
-// 					prune: true,
-// 					selfHeal: true,
-// 				},
-// 				syncOptions: ['Validate=false', 'CreateNamespace=true', 'ServerSideApply=false'],
-// 			},
-// 		},
-// 	},
-// 	{ provider: renderAppsYaml },
-// )
-
-const certManager = new k8s.apiextensions.CustomResource(
-	nm('cert-manager'),
-	{
-		apiVersion: 'argoproj.io/v1alpha1',
-		kind: 'Application',
-		metadata: {
-			namespace: 'argocd',
-			name: 'cert-manager',
-		},
-		spec: {
-			destination: {
-				namespace: 'cert-manager',
-				server: 'https://kubernetes.default.svc',
-			},
-			project: 'sdp',
-			source: {
-				repoURL: 'https://charts.jetstack.io',
-				chart: 'cert-manager',
-				targetRevision: '*',
-				helm: {
-					values: objectToYaml({
-						installCRDs: true,
-					}),
-				},
-			},
-			syncPolicy: {
-				automated: {
-					prune: true,
-					selfHeal: true,
-				},
-				syncOptions: ['Validate=false', 'CreateNamespace=true', 'ServerSideApply=false'],
-			},
-		},
-	},
-	{ provider: renderAppsYaml },
-)
+export * from './apps.ts'
 
 export const kubeconfig = kubeconfigJson
