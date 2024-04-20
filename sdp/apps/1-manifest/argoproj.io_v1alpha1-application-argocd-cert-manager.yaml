@@ -20,6 +20,4 @@ spec:
       prune: true
       selfHeal: true
     syncOptions:
-    - Validate=false
     - CreateNamespace=true
-    - ServerSideApply=false
