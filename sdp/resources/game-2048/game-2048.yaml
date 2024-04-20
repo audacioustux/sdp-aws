@@ -14,7 +14,7 @@ spec:
         spec:
             containers:
                 - name: game-2048
-                  image: 'public.ecr.aws/h5s4y9s3/2048-game:latest'
+                  image: 'amigoscode/2048:latest'
                   ports:
                       - containerPort: 80
 ---
