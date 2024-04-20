@@ -10,13 +10,13 @@ const provider = new k8s.Provider('render-apps-yaml', {
 })
 
 const helloWorld = new k8s.apiextensions.CustomResource(
-	nm('hello-world'),
+	nm('game-2048'),
 	{
 		apiVersion: 'argoproj.io/v1alpha1',
 		kind: 'Application',
 		metadata: {
 			namespace: 'argocd',
-			name: 'hello-world',
+			name: 'game-2048',
 		},
 		spec: {
 			destination: {
@@ -26,7 +26,7 @@ const helloWorld = new k8s.apiextensions.CustomResource(
 			project: 'sdp',
 			source: {
 				repoURL: config.git.repo,
-				path: `${config.git.path}/resources/hello-world`,
+				path: `${config.git.path}/resources/game-2048`,
 			},
 			syncPolicy: {
 				automated: {

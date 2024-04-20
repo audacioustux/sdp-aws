@@ -1,30 +1,30 @@
 kind: Deployment
 apiVersion: apps/v1
 metadata:
-    name: hello-world
+    name: app-2048
 spec:
     replicas: 1
     selector:
         matchLabels:
-            app: hello-world
+            app: app-2048
     template:
         metadata:
             labels:
-                app: hello-world
+                app: app-2048
         spec:
             containers:
-                - name: hello-world
-                  image: 'nginx:latest'
+                - name: game-2048
+                  image: 'public.ecr.aws/l6m2t8p7/docker-2048:latest'
                   ports:
                       - containerPort: 80
 ---
 kind: Service
 apiVersion: v1
 metadata:
-    name: hello-world
+    name: app-2048
 spec:
     selector:
-        app: hello-world
+        app: app-2048
     ports:
         - protocol: TCP
           port: 80
@@ -33,16 +33,16 @@ spec:
 kind: Ingress
 apiVersion: networking.k8s.io/v1
 metadata:
-    name: hello-world
+    name: app-2048
 spec:
     rules:
-        - host: hello-world.local
+        - host: app-2048.local
           http:
               paths:
                   - path: /
                     pathType: Prefix
                     backend:
                         service:
-                            name: hello-world
+                            name: app-2048
                             port:
                                 number: 80
