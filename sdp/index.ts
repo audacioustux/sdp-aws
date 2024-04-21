@@ -4,6 +4,9 @@ import * as eks from '@pulumi/eks'
 import * as k8s from '@pulumi/kubernetes'
 import { registerAutoTags } from './utils/autotag.ts'
 import * as config from './config.ts'
+import { ArgoApp } from './apps.ts'
+import { objectToYaml } from './utils/yaml.ts'
+import { assumeRoleForEKSPodIdentity } from './utils/policyStatement.ts'
 
 // Automatically inject tags.
 registerAutoTags({
@@ -780,25 +783,13 @@ const KarpenterControllerPolicy = new aws.iam.Policy(karpenterControllerPolicyNa
 })
 const karpenterControllerRoleName = nm('karpenter-controller-role')
 const karpenterControllerRole = new aws.iam.Role(karpenterControllerRoleName, {
-	assumeRolePolicy: {
-		Version: '2012-10-17',
-		Statement: [
-			{
-				Action: ['sts:AssumeRole', 'sts:TagSession'],
-				Effect: 'Allow',
-				Principal: {
-					Service: 'pods.eks.amazonaws.com',
-				},
-			},
-		],
-	},
+	assumeRolePolicy: assumeRoleForEKSPodIdentity(),
 })
 new aws.iam.RolePolicyAttachment(karpenterControllerRoleName, {
 	policyArn: KarpenterControllerPolicy.arn,
 	role: karpenterControllerRole,
 })
-
-new aws.eks.PodIdentityAssociation(nm('pod-identity-association'), {
+new aws.eks.PodIdentityAssociation(nm('karpenter-controller-pod-identity'), {
 	clusterName: eksCluster.name,
 	namespace: 'kube-system',
 	serviceAccount: 'karpenter',
@@ -1031,6 +1022,119 @@ const argoApplication = new k8s.apiextensions.CustomResource(
 	{ provider, dependsOn: [argoProject] },
 )
 
-export * from './apps.ts'
+// === EKS === 2048 ===
+
+new ArgoApp('app-2048', {
+	destination: {
+		namespace: 'miscellaneous',
+		server: 'https://kubernetes.default.svc',
+	},
+	project: 'sdp',
+	source: {
+		repoURL: config.git.repo,
+		path: `${config.git.path}/resources/game-2048`,
+	},
+	syncPolicy: {
+		automated: {
+			prune: true,
+			selfHeal: true,
+		},
+		syncOptions: ['CreateNamespace=true'],
+	},
+})
+
+// === EKS === Cert Manager ===
+
+new ArgoApp('cert-manager', {
+	destination: {
+		namespace: 'cert-manager',
+		server: 'https://kubernetes.default.svc',
+	},
+	project: 'sdp',
+	source: {
+		repoURL: 'https://charts.jetstack.io',
+		chart: 'cert-manager',
+		targetRevision: '*',
+		helm: {
+			values: objectToYaml({
+				installCRDs: true,
+			}),
+		},
+	},
+	syncPolicy: {
+		automated: {
+			prune: true,
+			selfHeal: true,
+		},
+		syncOptions: ['CreateNamespace=true'],
+	},
+})
+
+// === EKS === External DNS ===
+
+const externalDNSPolicyName = nm('external-dns-policy')
+const externalDNSPolicy = new aws.iam.Policy(externalDNSPolicyName, {
+	policy: aws.iam
+		.getPolicyDocument({
+			statements: [
+				{
+					effect: 'Allow',
+					actions: ['route53:ChangeResourceRecordSets'],
+					resources: ['arn:aws:route53:::hostedzone/*'],
+				},
+				{
+					effect: 'Allow',
+					actions: [
+						'route53:ListHostedZones',
+						'route53:ListResourceRecordSets',
+						'route53:ListTagsForResource',
+					],
+					resources: ['*'],
+				},
+			],
+		})
+		.then((doc) => doc.json),
+})
+const externalDNSRoleName = nm('external-dns-role')
+const externalDNSRole = new aws.iam.Role(externalDNSRoleName, {
+	assumeRolePolicy: assumeRoleForEKSPodIdentity(),
+})
+new aws.iam.RolePolicyAttachment(externalDNSRoleName, {
+	policyArn: externalDNSPolicy.arn,
+	role: externalDNSRole,
+})
+new aws.eks.PodIdentityAssociation(nm('external-dns-pod-identity'), {
+	clusterName: eksCluster.name,
+	namespace: 'kube-system',
+	serviceAccount: 'external-dns',
+	roleArn: externalDNSRole.arn,
+})
+
+new ArgoApp('external-dns', {
+	destination: {
+		namespace: 'kube-system',
+		server: 'https://kubernetes.default.svc',
+	},
+	project: 'sdp',
+	source: {
+		repoURL: 'https://kubernetes-sigs.github.io/external-dns',
+		chart: 'external-dns',
+		targetRevision: '*',
+		helm: {
+			values: objectToYaml({
+				serviceAccount: {
+					create: false,
+					name: 'external-dns',
+				},
+			}),
+		},
+	},
+	syncPolicy: {
+		automated: {
+			prune: true,
+			selfHeal: true,
+		},
+	},
+})
 
 export const kubeconfig = kubeconfigJson

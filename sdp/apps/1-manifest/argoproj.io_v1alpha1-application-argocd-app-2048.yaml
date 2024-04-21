@@ -1,7 +1,7 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: game-2048
+  name: app-2048
   namespace: argocd
 spec:
   destination:

@@ -13,4 +13,4 @@ tasks:
     up:
         deps: [deps]
         dir: sdp
-        cmd: pulumi up -s prod
+        cmd: pulumi up -s prod -r

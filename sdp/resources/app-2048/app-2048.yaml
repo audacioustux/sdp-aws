@@ -13,7 +13,7 @@ spec:
                 app: app-2048
         spec:
             containers:
-                - name: game-2048
+                - name: app-2048
                   image: 'amigoscode/2048:latest'
                   ports:
                       - containerPort: 80

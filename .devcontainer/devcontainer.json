@@ -48,9 +48,5 @@
     "ghcr.io/audacioustux/devcontainers/taskfile": {},
     "ghcr.io/devcontainers-contrib/features/argo-cd": {}
   },
-  "updateContentCommand": "git clean -Xdf --exclude='!**/*.env'",
-  "mounts": [
-    "type=bind,source=${localEnv:HOME}/.ssh,target=/home/vscode/.ssh,consistency=cached"
-  ],
-  "containerUser": "vscode"
+  "updateContentCommand": "git clean -Xdf --exclude='!**/*.env'"
 }
