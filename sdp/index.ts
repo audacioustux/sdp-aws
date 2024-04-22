@@ -1123,7 +1123,7 @@ new ArgoApp('external-dns', {
 		helm: {
 			values: objectToYaml({
 				serviceAccount: {
-					create: false,
+					create: true,
 					name: 'external-dns',
 				},
 			}),

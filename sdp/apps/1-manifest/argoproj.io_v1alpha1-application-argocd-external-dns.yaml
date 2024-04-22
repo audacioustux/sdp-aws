@@ -13,7 +13,7 @@ spec:
     helm:
       values: |
         serviceAccount:
-            create: false
+            create: true
             name: external-dns
     repoURL: https://kubernetes-sigs.github.io/external-dns
     targetRevision: '*'
