@@ -9,7 +9,7 @@ spec:
     server: https://kubernetes.default.svc
   project: sdp
   source:
-    path: sdp/resources/game-2048
+    path: sdp/resources/app-2048
     repoURL: https://github.com/audacioustux/zeroaws
   syncPolicy:
     automated:
