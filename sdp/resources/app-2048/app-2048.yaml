@@ -38,7 +38,7 @@ metadata:
     name: app-2048
 spec:
     rules:
-        - host: app-2048.local
+        - host: app-2048.jobready.global
           http:
               paths:
                   - path: /
