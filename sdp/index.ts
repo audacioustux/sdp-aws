@@ -1032,7 +1032,7 @@ new ArgoApp('app-2048', {
 	project: 'sdp',
 	source: {
 		repoURL: config.git.repo,
-		path: `${config.git.path}/resources/game-2048`,
+		path: `${config.git.path}/resources/app-2048`,
 	},
 	syncPolicy: {
 		automated: {

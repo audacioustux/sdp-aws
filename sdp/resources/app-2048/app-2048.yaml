@@ -22,6 +22,8 @@ kind: Service
 apiVersion: v1
 metadata:
     name: app-2048
+    annotations:
+        external-dns.alpha.kubernetes.io/hostname: app-2048.coderstrust.global
 spec:
     selector:
         app: app-2048
