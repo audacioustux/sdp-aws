@@ -7,7 +7,7 @@ spec:
   destination:
     namespace: miscellaneous
     server: https://kubernetes.default.svc
-  project: sdp
+  project: argocd/sdp
   source:
     path: sdp/resources/app-2048
     repoURL: https://github.com/audacioustux/zeroaws
@@ -16,6 +16,5 @@ spec:
       prune: true
       selfHeal: true
     syncOptions:
-    - ServerSideApply=true
-    - FailOnSharedResource=true
     - CreateNamespace=true
+    - ServerSideApply=true

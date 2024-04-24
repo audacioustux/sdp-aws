@@ -4,9 +4,14 @@ import * as eks from '@pulumi/eks'
 import * as k8s from '@pulumi/kubernetes'
 import { registerAutoTags } from './utils/autotag.ts'
 import * as config from './config.ts'
-import { ArgoApp } from './apps.ts'
 import { objectToYaml } from './utils/yaml.ts'
 import { assumeRoleForEKSPodIdentity } from './utils/policyStatement.ts'
+import Application from './crds/applications/argoproj/v1alpha1/application.ts'
+import AppProject from './crds/appprojects/argoproj/v1alpha1/appProject.ts'
+const argocd = {
+  ...Application,
+  ...AppProject,
+}
 
 // Automatically inject tags.
 registerAutoTags({
@@ -950,7 +955,7 @@ new k8s.helm.v3.Release(
   { provider },
 )
 
-const sdpProject = new k8s.apiextensions.CustomResource(
+const sdpProject = new argocd.AppProject(
   nm('sdp'),
   {
     apiVersion: 'argoproj.io/v1alpha1',
@@ -982,64 +987,68 @@ const sdpProject = new k8s.apiextensions.CustomResource(
   { provider },
 )
 
-new ArgoApp(
-  'sdp',
-  {
-    destination: {
-      namespace: 'argocd',
-    },
-    project: 'sdp',
-    source: {
-      repoURL: config.git.repo,
-      path: `${config.git.path}/apps`,
-      targetRevision: 'main',
-      directory: {
-        recurse: true,
+sdpProject.id.apply((project) => {
+  // === 2048 ===
+  const nm = (name: string) => `${project}-${name}`
+  const provider = new k8s.Provider('render-apps-yaml', {
+    renderYamlToDirectory: 'apps',
+  })
+
+  new argocd.Application(
+    nm('2048'),
+    {
+      apiVersion: 'argoproj.io/v1alpha1',
+      kind: 'Application',
+      metadata: {
+        namespace: 'argocd',
+        name: '2048',
+      },
+      spec: {
+        project,
+        source: {
+          repoURL: config.git.repo,
+          path: `${config.git.path}/resources/app-2048`,
+        },
+        destination: {
+          server: 'https://kubernetes.default.svc',
+          namespace: 'miscellaneous',
+        },
+        syncPolicy: {
+          automated: {
+            prune: true,
+            selfHeal: true,
+          },
+          syncOptions: ['CreateNamespace=true', 'ServerSideApply=true'],
+        },
       },
     },
-  },
-  { provider },
-)
-
-// === EKS === 2048 ===
-
-new ArgoApp('2048', {
-  destination: {
-    namespace: 'miscellaneous',
-  },
-  project: 'sdp',
-  source: {
-    repoURL: config.git.repo,
-    path: `${config.git.path}/resources/app-2048`,
-  },
-  syncPolicy: {
-    syncOptions: { CreateNamespace: true },
-  },
+    { provider },
+  )
 })
 
 // === EKS === Cert Manager ===
 
-new ArgoApp('cert-manager', {
-  destination: {
-    namespace: 'cert-manager',
-  },
-  project: 'sdp',
-  source: {
-    repoURL: 'https://charts.jetstack.io',
-    chart: 'cert-manager',
-    targetRevision: '*',
-    helm: {
-      values: objectToYaml({
-        installCRDs: true,
-      }),
-    },
-  },
-  syncPolicy: {
-    syncOptions: {
-      CreateNamespace: true,
-    },
-  },
-})
+// new ArgoApp('cert-manager', {
+//   destination: {
+//     namespace: 'cert-manager',
+//   },
+//   project: 'sdp',
+//   source: {
+//     repoURL: 'https://charts.jetstack.io',
+//     chart: 'cert-manager',
+//     targetRevision: '*',
+//     helm: {
+//       values: objectToYaml({
+//         installCRDs: true,
+//       }),
+//     },
+//   },
+//   syncPolicy: {
+//     syncOptions: {
+//       CreateNamespace: true,
+//     },
+//   },
+// })
 
 // === EKS === External DNS ===
 
@@ -1077,43 +1086,43 @@ new aws.eks.PodIdentityAssociation(nm('external-dns-pod-identity'), {
   roleArn: externalDNSRole.arn,
 })
 
-new ArgoApp('external-dns', {
-  destination: {
-    namespace: 'kube-system',
-  },
-  project: 'sdp',
-  source: {
-    repoURL: 'https://kubernetes-sigs.github.io/external-dns',
-    chart: 'external-dns',
-    targetRevision: '*',
-    helm: {
-      values: objectToYaml({
-        serviceAccount: {
-          create: true,
-          name: 'external-dns',
-        },
-      }),
-    },
-  },
-})
+// new ArgoApp('external-dns', {
+//   destination: {
+//     namespace: 'kube-system',
+//   },
+//   project: 'sdp',
+//   source: {
+//     repoURL: 'https://kubernetes-sigs.github.io/external-dns',
+//     chart: 'external-dns',
+//     targetRevision: '*',
+//     helm: {
+//       values: objectToYaml({
+//         serviceAccount: {
+//           create: true,
+//           name: 'external-dns',
+//         },
+//       }),
+//     },
+//   },
+// })
 
 // === EKS === CloudnativePG ===
 
-new ArgoApp('cloudnative-pg', {
-  destination: {
-    namespace: 'cnpg-system',
-  },
-  project: 'sdp',
-  source: {
-    repoURL: 'https://cloudnative-pg.github.io/charts',
-    chart: 'cloudnative-pg',
-    targetRevision: '*',
-  },
-  syncPolicy: {
-    syncOptions: {
-      CreateNamespace: true,
-    },
-  },
-})
+// new ArgoApp('cloudnative-pg', {
+//   destination: {
+//     namespace: 'cnpg-system',
+//   },
+//   project: 'sdp',
+//   source: {
+//     repoURL: 'https://cloudnative-pg.github.io/charts',
+//     chart: 'cloudnative-pg',
+//     targetRevision: '*',
+//   },
+//   syncPolicy: {
+//     syncOptions: {
+//       CreateNamespace: true,
+//     },
+//   },
+// })
 
 export const kubeconfig = kubeconfigJson
