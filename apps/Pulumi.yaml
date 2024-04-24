@@ -1,0 +1,12 @@
+name: sdp-apps
+description: Software Delivery Platform - ArgoCD Applications
+config:
+  pulumi:disable-default-providers:
+    - kubernetes
+  pulumi:tags:
+    value:
+      pulumi:template: aws-typescript
+runtime:
+  name: nodejs
+  options:
+    nodeargs: "--import ./register.js"

@@ -1,4 +1,4 @@
-name: sdp
+name: sdp-aws
 description: Software Delivery Platform
 config:
   pulumi:disable-default-providers:
@@ -9,4 +9,4 @@ config:
 runtime:
   name: nodejs
   options:
-    nodeargs: "--import ./register.js"
+    nodeargs: '--import ./register.js'

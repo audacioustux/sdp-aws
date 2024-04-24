@@ -1,5 +1,5 @@
 {
-  "name": "sdp",
+  "name": "sdp-apps",
   "exports": "./index.ts",
   "type": "module",
   "engines": {

@@ -6,12 +6,6 @@ import { registerAutoTags } from './utils/autotag.ts'
 import * as config from './config.ts'
 import { objectToYaml } from './utils/yaml.ts'
 import { assumeRoleForEKSPodIdentity } from './utils/policyStatement.ts'
-import Application from './crds/applications/argoproj/v1alpha1/application.ts'
-import AppProject from './crds/appprojects/argoproj/v1alpha1/appProject.ts'
-const argocd = {
-  ...Application,
-  ...AppProject,
-}
 
 // Automatically inject tags.
 registerAutoTags({
@@ -955,97 +949,98 @@ new k8s.helm.v3.Release(
   { provider },
 )
 
-const sdpProject = new argocd.AppProject(
-  nm('sdp'),
-  {
-    apiVersion: 'argoproj.io/v1alpha1',
-    kind: 'AppProject',
-    metadata: {
-      namespace: 'argocd',
-      name: 'sdp',
-    },
-    spec: {
-      clusterResourceWhitelist: [
-        {
-          group: '*',
-          kind: '*',
-        },
-      ],
-      description: 'default',
-      destinations: [
-        {
-          namespace: '*',
-          server: 'https://kubernetes.default.svc',
-        },
-      ],
-      orphanedResources: {
-        warn: true,
-      },
-      sourceRepos: ['*'],
-    },
-  },
-  { provider },
-)
+// === EKS === ArgoCD === App of Apps ===
 
-sdpProject.id.apply((project) => {
-  // === 2048 ===
-  const nm = (name: string) => `${project}-${name}`
-  const provider = new k8s.Provider('render-apps-yaml', {
-    renderYamlToDirectory: 'apps',
-  })
-
-  new argocd.Application(
-    nm('2048'),
-    {
-      apiVersion: 'argoproj.io/v1alpha1',
-      kind: 'Application',
-      metadata: {
-        namespace: 'argocd',
-        name: '2048',
-      },
-      spec: {
-        project,
-        source: {
-          repoURL: config.git.repo,
-          path: `${config.git.path}/resources/app-2048`,
-        },
-        destination: {
-          server: 'https://kubernetes.default.svc',
-          namespace: 'miscellaneous',
-        },
-        syncPolicy: {
-          automated: {
-            prune: true,
-            selfHeal: true,
-          },
-          syncOptions: ['CreateNamespace=true', 'ServerSideApply=true'],
-        },
-      },
-    },
-    { provider },
-  )
-})
-
-// === EKS === Cert Manager ===
-
-// new ArgoApp('cert-manager', {
-//   destination: {
-//     namespace: 'cert-manager',
-//   },
-//   project: 'sdp',
-//   source: {
-//     repoURL: 'https://charts.jetstack.io',
-//     chart: 'cert-manager',
-//     targetRevision: '*',
-//     helm: {
-//       values: objectToYaml({
-//         installCRDs: true,
-//       }),
+// const sdpProject = new argocd.AppProject(
+//   nm('sdp'),
+//   {
+//     apiVersion: 'argoproj.io/v1alpha1',
+//     kind: 'AppProject',
+//     metadata: {
+//       namespace: 'argocd',
+//       name: 'sdp',
+//     },
+//     spec: {
+//       clusterResourceWhitelist: [
+//         {
+//           group: '*',
+//           kind: '*',
+//         },
+//       ],
+//       description: 'default',
+//       destinations: [
+//         {
+//           namespace: '*',
+//           server: 'https://kubernetes.default.svc',
+//         },
+//       ],
+//       orphanedResources: {
+//         warn: true,
+//       },
+//       sourceRepos: ['*'],
 //     },
 //   },
-//   syncPolicy: {
-//     syncOptions: {
-//       CreateNamespace: true,
+//   { provider },
+// )
+
+// new argocd.Application(
+//   nm('apps'),
+//   {
+//     apiVersion: 'argoproj.io/v1alpha1',
+//     kind: 'Application',
+//     metadata: {
+//       namespace: 'argocd',
+//       name: 'apps',
+//     },
+//     spec: {
+//       project: 'sdp',
+//       source: {
+//         repoURL: config.git.repo,
+//         path: `${config.git.repo}/apps`,
+//         targetRevision: 'HEAD',
+//         directory: {
+//           recurse: true,
+//         },
+//       },
+//       destination: {
+//         server: 'https://kubernetes.default.svc',
+//       },
+//       syncPolicy: {
+//         automated: {
+//           prune: true,
+//           selfHeal: true,
+//         },
+//         syncOptions: ['CreateNamespace=true', 'ServerSideApply=true'],
+//       },
+//     },
+//   },
+//   { provider },
+// )
+
+// // === EKS === Cert Manager ===
+
+// new argocd.Application(nm('cert-manager'), {
+//   spec: {
+//     destination: {
+//       namespace: 'cert-manager',
+//     },
+//     project: 'sdp',
+//     source: {
+//       repoURL: 'https://charts.jetstack.io',
+//       chart: 'cert-manager',
+//       targetRevision: '*',
+//       helm: {
+//         values: objectToYaml({
+//           installCRDs: true,
+//         }),
+//       },
+//     },
+//     syncPolicy: {
+//       automated: {
+//         prune: true,
+//         selfHeal: true,
+//       },
+//       syncOptions: ['CreateNamespace=true', 'ServerSideApply=true'],
 //     },
 //   },
 // })
