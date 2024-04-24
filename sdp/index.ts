@@ -1097,7 +1097,7 @@ new ArgoApp('external-dns', {
 
 // === EKS === CloudnativePG ===
 
-new ArgoApp('cloudnativepg', {
+new ArgoApp('cloudnative-pg', {
   destination: {
     namespace: 'cnpg-system',
   },
@@ -1106,6 +1106,9 @@ new ArgoApp('cloudnativepg', {
     repoURL: 'https://cloudnative-pg.github.io/charts',
     chart: 'cloudnative-pg',
     targetRevision: '*',
+  },
+  syncPolicy: {
+    syncOptions: ['CreateNamespace=true'],
   },
 })
 
