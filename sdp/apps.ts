@@ -10,7 +10,7 @@ const provider = new k8s.Provider('render-apps-yaml', {
 })
 
 export class ArgoApp extends k8s.apiextensions.CustomResource {
-  constructor(name: string, spec: Record<string, any>, opts: pulumi.CustomResourceOptions = {}) {
+  constructor(name: string, spec: Record<string, NonNullable<unknown>>, opts: pulumi.CustomResourceOptions = {}) {
     const defaultSpec = {
       destination: {
         namespace: 'default',

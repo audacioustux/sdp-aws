@@ -3,7 +3,9 @@ version: "3"
 dotenv: [".env"]
 
 includes:
-  sdp: sdp
+  sdp:
+    taskfile: sdp
+    dir: sdp
 
 tasks:
   default:

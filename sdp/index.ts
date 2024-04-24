@@ -950,8 +950,8 @@ new k8s.helm.v3.Release(
   { provider },
 )
 
-const argoProject = new k8s.apiextensions.CustomResource(
-  nm('argocd-project'),
+const sdpProject = new k8s.apiextensions.CustomResource(
+  nm('sdp'),
   {
     apiVersion: 'argoproj.io/v1alpha1',
     kind: 'AppProject',
@@ -988,7 +988,7 @@ new ArgoApp(
     destination: {
       namespace: 'argocd',
     },
-    project: 'sdp',
+    project: sdpProject.metadata.name,
     source: {
       repoURL: config.git.repo,
       path: `${config.git.path}/apps`,
@@ -998,16 +998,16 @@ new ArgoApp(
       },
     },
   },
-  { provider, dependsOn: [argoProject] },
+  { provider },
 )
 
 // === EKS === 2048 ===
 
-new ArgoApp('app-2048', {
+new ArgoApp('2048', {
   destination: {
     namespace: 'miscellaneous',
   },
-  project: 'sdp',
+  project: sdpProject.metadata.name,
   source: {
     repoURL: config.git.repo,
     path: `${config.git.path}/resources/app-2048`,
@@ -1023,7 +1023,7 @@ new ArgoApp('cert-manager', {
   destination: {
     namespace: 'cert-manager',
   },
-  project: 'sdp',
+  project: sdpProject.metadata.name,
   source: {
     repoURL: 'https://charts.jetstack.io',
     chart: 'cert-manager',
@@ -1079,7 +1079,7 @@ new ArgoApp('external-dns', {
   destination: {
     namespace: 'kube-system',
   },
-  project: 'sdp',
+  project: sdpProject.metadata.name,
   source: {
     repoURL: 'https://kubernetes-sigs.github.io/external-dns',
     chart: 'external-dns',
@@ -1092,6 +1092,20 @@ new ArgoApp('external-dns', {
         },
       }),
     },
+  },
+})
+
+// === EKS === CloudnativePG ===
+
+new ArgoApp('cloudnativepg', {
+  destination: {
+    namespace: 'cnpg-system',
+  },
+  project: sdpProject.metadata.name,
+  source: {
+    repoURL: 'https://cloudnative-pg.github.io/charts',
+    chart: 'cloudnative-pg',
+    targetRevision: '*',
   },
 })
 

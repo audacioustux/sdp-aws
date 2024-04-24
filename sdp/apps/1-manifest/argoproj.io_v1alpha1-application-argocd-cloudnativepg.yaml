@@ -1,19 +1,18 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: app-2048
+  name: cloudnativepg
   namespace: argocd
 spec:
   destination:
-    namespace: miscellaneous
+    namespace: cnpg-system
     server: https://kubernetes.default.svc
   project: sdp
   source:
-    path: sdp/resources/app-2048
-    repoURL: https://github.com/audacioustux/zeroaws
+    chart: cloudnative-pg
+    repoURL: https://cloudnative-pg.github.io/charts
+    targetRevision: '*'
   syncPolicy:
     automated:
       prune: true
       selfHeal: true
-    syncOptions:
-    - CreateNamespace=true
