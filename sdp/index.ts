@@ -988,7 +988,7 @@ new ArgoApp(
     destination: {
       namespace: 'argocd',
     },
-    project: sdpProject.metadata.name,
+    project: 'sdp',
     source: {
       repoURL: config.git.repo,
       path: `${config.git.path}/apps`,
@@ -1007,13 +1007,13 @@ new ArgoApp('2048', {
   destination: {
     namespace: 'miscellaneous',
   },
-  project: sdpProject.metadata.name,
+  project: 'sdp',
   source: {
     repoURL: config.git.repo,
     path: `${config.git.path}/resources/app-2048`,
   },
   syncPolicy: {
-    syncOptions: ['CreateNamespace=true'],
+    syncOptions: { CreateNamespace: true },
   },
 })
 
@@ -1023,7 +1023,7 @@ new ArgoApp('cert-manager', {
   destination: {
     namespace: 'cert-manager',
   },
-  project: sdpProject.metadata.name,
+  project: 'sdp',
   source: {
     repoURL: 'https://charts.jetstack.io',
     chart: 'cert-manager',
@@ -1035,7 +1035,9 @@ new ArgoApp('cert-manager', {
     },
   },
   syncPolicy: {
-    syncOptions: ['CreateNamespace=true'],
+    syncOptions: {
+      CreateNamespace: true,
+    },
   },
 })
 
@@ -1079,7 +1081,7 @@ new ArgoApp('external-dns', {
   destination: {
     namespace: 'kube-system',
   },
-  project: sdpProject.metadata.name,
+  project: 'sdp',
   source: {
     repoURL: 'https://kubernetes-sigs.github.io/external-dns',
     chart: 'external-dns',
@@ -1101,14 +1103,16 @@ new ArgoApp('cloudnative-pg', {
   destination: {
     namespace: 'cnpg-system',
   },
-  project: sdpProject.metadata.name,
+  project: 'sdp',
   source: {
     repoURL: 'https://cloudnative-pg.github.io/charts',
     chart: 'cloudnative-pg',
     targetRevision: '*',
   },
   syncPolicy: {
-    syncOptions: ['CreateNamespace=true'],
+    syncOptions: {
+      CreateNamespace: true,
+    },
   },
 })
 

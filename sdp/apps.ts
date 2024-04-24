@@ -22,6 +22,10 @@ export class ArgoApp extends k8s.apiextensions.CustomResource {
           prune: true,
           selfHeal: true,
         },
+        syncOptions: {
+          ServerSideApply: true,
+          FailOnSharedResource: true,
+        },
       },
     }
 
@@ -34,7 +38,15 @@ export class ArgoApp extends k8s.apiextensions.CustomResource {
           namespace: 'argocd',
           name,
         },
-        spec: R.mergeDeepRight(defaultSpec, spec),
+        // spec: R.mergeDeepRight(defaultSpec, spec),
+        spec: R.evolve(
+          {
+            syncPolicy: {
+              syncOptions: R.pipe(R.toPairs, R.map(R.join('='))),
+            },
+          },
+          R.mergeDeepRight(defaultSpec, spec),
+        ),
       },
       R.mergeRight({ provider }, opts),
     )
