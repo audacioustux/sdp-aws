@@ -6,12 +6,7 @@ import { registerAutoTags } from './utils/autotag.ts'
 import * as config from './config.ts'
 import { assumeRoleForEKSPodIdentity } from './utils/policyStatement.ts'
 import { objectToYaml } from './utils/yaml.ts'
-import Application from './crds/applications/argoproj/v1alpha1/application.ts'
-import AppProject from './crds/appprojects/argoproj/v1alpha1/appProject.ts'
-const argocd = {
-  ...Application,
-  ...AppProject,
-}
+import { AppProject, Application } from './types/argocd.ts'
 
 // Automatically inject tags.
 registerAutoTags({
@@ -930,7 +925,7 @@ const argocdRelease = new k8s.helm.v3.Release(
 )
 
 const sdpProjectName = 'sdp'
-const sdpProject = new argocd.AppProject(
+const sdpProject = new AppProject(
   nm(sdpProjectName),
   {
     apiVersion: 'argoproj.io/v1alpha1',
@@ -994,7 +989,7 @@ new aws.eks.PodIdentityAssociation(nm('external-dns-pod-identity'), {
   serviceAccount: 'external-dns',
   roleArn: externalDNSRole.arn,
 })
-new argocd.Application(
+new Application(
   nm('external-dns'),
   {
     metadata: {
@@ -1032,9 +1027,41 @@ new argocd.Application(
   { provider, dependsOn: [argocdRelease] },
 )
 
+// === EKS === Cert Manager ===
+
+new Application(
+  nm('cert-manager'),
+  {
+    metadata: {
+      name: 'cert-manager',
+      namespace: 'argocd',
+    },
+    spec: {
+      project: sdpProjectName,
+      destination: {
+        server: 'https://kubernetes.default.svc',
+        namespace: 'cert-manager',
+      },
+      source: {
+        repoURL: 'https://charts.jetstack.io',
+        chart: 'cert-manager',
+        targetRevision: '*',
+      },
+      syncPolicy: {
+        automated: {
+          prune: true,
+          selfHeal: true,
+        },
+        syncOptions: ['ServerSideApply=true', 'CreateNamespace=true'],
+      },
+    },
+  },
+  { provider, dependsOn: [argocdRelease] },
+)
+
 // === EKS === Metrics Server ===
 
-new argocd.Application(
+new Application(
   nm('metrics-server'),
   {
     metadata: {
@@ -1066,7 +1093,7 @@ new argocd.Application(
 
 // === EKS === Kube Prometheus Stack ===
 
-new argocd.Application(
+new Application(
   nm('kube-prometheus-stack'),
   {
     metadata: {

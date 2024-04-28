@@ -10,4 +10,4 @@ tasks:
 
   up:
     deps: [deps]
-    cmd: pulumi up -s prod {{.CLI_ARGS}}
+    cmd: pulumi up {{.CLI_ARGS}}
