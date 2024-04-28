@@ -22,5 +22,5 @@ tasks:
   argocd:pass: kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
   argocd:expose: kubectl port-forward svc/argocd-server -n argocd 8080:443
   kubeconfig:update:
-    dir: sdp
+    dir: aws
     cmd: mkdir -p ~/.kube && pulumi stack -s prod output kubeconfig > ~/.kube/config

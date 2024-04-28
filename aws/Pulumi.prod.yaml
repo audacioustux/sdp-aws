@@ -1,7 +1,7 @@
 config:
   aws:region: ap-south-1
   git:password:
-    secure: AAABALvsng8gJtAPmLdwidSE4W2JNcRPWWb9IFiL61SthOtDs9FAfd1wYNlNEi0wxrGe4+rBASBh8yLlDgq3ZX5SrXLC7dDJgUmVXik1rc6Pze1qtYB4y+sFYYPVmisvBHLcP/jyd3af2XIfVCWw1ZmlMENslsv/8sHVO70=
+    secure: AAABAMA8s6xPPlvbbNtVcQNoYfCsIdA4Y2jFgB67F0iNcq8gQn7WCow0U4cHMQrraO7aqIJJJhotfzWqbXSeEEC6+gEmI5xxrNOp5uGfqzJ22lrplqGhbVcNSfg/46viq5yFzczaYRRjdtKfzaNXyyy58V6X20pfUI7Yy44=
   git:path: sdp
   git:repo: https://github.com/audacioustux/zeroaws
   git:username: audacioustux

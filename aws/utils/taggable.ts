@@ -126,6 +126,7 @@ const taggableResourceTypes = [
   'aws:eks/cluster:Cluster',
   'aws:eks/fargateProfile:FargateProfile',
   'aws:eks/nodeGroup:NodeGroup',
+  'aws:eks/podIdentityAssociation:PodIdentityAssociation',
   'aws:elasticache/cluster:Cluster',
   'aws:elasticache/replicationGroup:ReplicationGroup',
   'aws:elasticbeanstalk/application:Application',

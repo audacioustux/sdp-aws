@@ -4,8 +4,14 @@ import * as eks from '@pulumi/eks'
 import * as k8s from '@pulumi/kubernetes'
 import { registerAutoTags } from './utils/autotag.ts'
 import * as config from './config.ts'
-import { objectToYaml } from './utils/yaml.ts'
 import { assumeRoleForEKSPodIdentity } from './utils/policyStatement.ts'
+import { objectToYaml } from './utils/yaml.ts'
+import Application from './crds/applications/argoproj/v1alpha1/application.ts'
+import AppProject from './crds/appprojects/argoproj/v1alpha1/appProject.ts'
+const argocd = {
+  ...Application,
+  ...AppProject,
+}
 
 // Automatically inject tags.
 registerAutoTags({
@@ -15,6 +21,8 @@ registerAutoTags({
 })
 
 const nm = (name: string) => `${config.pulumi.project}-${config.pulumi.stack}-${name}`
+
+const eksClusterName = nm('eks')
 
 // === VPC ===
 
@@ -55,6 +63,7 @@ const privateSubnets = availabilityZones.names.map((az, index) => {
     mapPublicIpOnLaunch: false,
     tags: {
       Name: subnetName,
+      'karpenter.sh/discovery': eksClusterName,
     },
   })
 })
@@ -152,30 +161,25 @@ new aws.kms.Alias(kmsKeyName, {
   targetKeyId: kmsKey.id,
 })
 
-// === EKS === Node Role ===
+// === EKS === Cluster ===
 
-const eksNodeRoleName = nm('node-role')
-const eksNodeRole = new aws.iam.Role(eksNodeRoleName, {
+const eksInstanceRole = new aws.iam.Role(nm('eks-instance-role'), {
   assumeRolePolicy: aws.iam.assumeRolePolicyForPrincipal({
     Service: 'ec2.amazonaws.com',
   }),
-  path: '/',
   managedPolicyArns: [
-    'arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy',
     'arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy',
+    'arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy',
     'arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly',
     'arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore',
   ],
 })
 
-// === EKS === Cluster ===
-
-const eksClusterName = nm('eks')
 const {
-  provider,
   eksCluster,
   core: cluster,
-  kubeconfigJson,
+  kubeconfig,
+  provider,
 } = new eks.Cluster(eksClusterName, {
   name: eksClusterName,
   version: '1.29',
@@ -185,11 +189,9 @@ const {
   privateSubnetIds: privateSubnets.map((s) => s.id),
   nodeAssociatePublicIpAddress: false,
   encryptionConfigKeyArn: kmsKey.arn,
-  defaultAddonsToRemove: ['kube-proxy'],
+  defaultAddonsToRemove: ['kube-proxy', 'vpc-cni', 'coredns'],
+  useDefaultVpcCni: true,
   skipDefaultNodeGroup: true,
-  vpcCniOptions: {
-    enablePrefixDelegation: true,
-  },
   nodeGroupOptions: {
     taints: {
       'node.cilium.io/agent-not-ready': {
@@ -198,23 +200,7 @@ const {
       },
     },
   },
-  roleMappings: [
-    {
-      roleArn: eksNodeRole.arn,
-      username: 'system:node:{{EC2PrivateDNSName}}',
-      groups: ['system:bootstrappers', 'system:nodes'],
-    },
-  ],
-})
-
-privateSubnets.map((subnet) => {
-  subnet.id.apply((subnetId) => {
-    new aws.ec2.Tag(nm(`${subnetId}-tag`), {
-      key: 'karpenter.sh/discovery',
-      value: eksCluster.name,
-      resourceId: subnetId,
-    })
-  })
+  instanceRole: eksInstanceRole,
 })
 
 // === EKS === Node Group ===
@@ -223,109 +209,16 @@ const highPriorityNodeGroupName = nm('high-priority')
 new eks.ManagedNodeGroup(highPriorityNodeGroupName, {
   nodeGroupName: highPriorityNodeGroupName,
   cluster,
-  instanceTypes: ['m7g.medium', 't4g.medium'],
+  instanceTypes: ['m7g.large', 't4g.large'],
   capacityType: 'SPOT',
   amiType: 'BOTTLEROCKET_ARM_64',
   // amiType: 'AL2023_ARM_64_STANDARD',
   nodeRole: cluster.instanceRoles[0],
   scalingConfig: {
-    minSize: 3,
-    maxSize: 3,
-    desiredSize: 3,
+    minSize: 2,
+    maxSize: 2,
+    desiredSize: 2,
   },
-})
-
-// === EKS === Addons === CoreDNS ===
-
-new aws.eks.Addon(nm('coredns'), {
-  addonName: 'coredns',
-  clusterName: eksCluster.name,
-  addonVersion: eksCluster.version.apply((version) =>
-    aws.eks.getAddonVersion({
-      addonName: 'coredns',
-      kubernetesVersion: version,
-      mostRecent: true,
-    }),
-  ).version,
-  resolveConflictsOnCreate: 'OVERWRITE',
-})
-
-// === EKS === Addons === VPC CNI ===
-
-const vpcCniAddon = new aws.eks.Addon(nm('vpc-cni'), {
-  addonName: 'vpc-cni',
-  clusterName: eksCluster.name,
-  addonVersion: eksCluster.version.apply(
-    async (kubernetesVersion) =>
-      await aws.eks.getAddonVersion({
-        addonName: 'vpc-cni',
-        kubernetesVersion,
-        mostRecent: true,
-      }),
-  ).version,
-  resolveConflictsOnCreate: 'OVERWRITE',
-})
-new k8s.apps.v1.DaemonSetPatch(
-  nm('aws-node-daemonset'),
-  {
-    metadata: {
-      namespace: 'kube-system',
-      name: 'aws-node',
-    },
-    spec: {
-      template: {
-        spec: {
-          nodeSelector: {
-            'io.cilium/aws-node-enabled': 'true',
-          },
-        },
-      },
-    },
-  },
-  { provider, retainOnDelete: true, dependsOn: vpcCniAddon },
-)
-
-// === EKS === Addons === EBS CSI Driver ===
-
-const ebsCsiDriverRoleName = nm('ebs-csi-driver-irsa')
-const ebsCsiDriverRole = new aws.iam.Role(ebsCsiDriverRoleName, {
-  assumeRolePolicy: aws.iam.assumeRolePolicyForPrincipal({
-    Service: 'ec2.amazonaws.com',
-  }),
-})
-new aws.iam.RolePolicyAttachment(`${ebsCsiDriverRoleName}-attachment`, {
-  role: ebsCsiDriverRole,
-  policyArn: 'arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy',
-})
-new aws.eks.Addon(nm('ebs-csi-driver'), {
-  addonName: 'aws-ebs-csi-driver',
-  clusterName: eksCluster.name,
-  addonVersion: eksCluster.version.apply(
-    async (kubernetesVersion) =>
-      await aws.eks.getAddonVersion({
-        addonName: 'aws-ebs-csi-driver',
-        kubernetesVersion,
-        mostRecent: true,
-      }),
-  ).version,
-  serviceAccountRoleArn: ebsCsiDriverRole.arn,
-  resolveConflictsOnCreate: 'OVERWRITE',
-})
-
-// === EKS === Addons === Pod Identity Agent ===
-
-new aws.eks.Addon(nm('pod-identity-agent'), {
-  addonName: 'eks-pod-identity-agent',
-  clusterName: eksCluster.name,
-  addonVersion: eksCluster.version.apply(
-    async (kubernetesVersion) =>
-      await aws.eks.getAddonVersion({
-        addonName: 'eks-pod-identity-agent',
-        kubernetesVersion,
-        mostRecent: true,
-      }),
-  ).version,
-  resolveConflictsOnCreate: 'OVERWRITE',
 })
 
 // === EKS === Cilium ===
@@ -382,6 +275,91 @@ new k8s.helm.v3.Release(
   },
   { provider },
 )
+
+// === EKS === Addons === CoreDNS ===
+
+new aws.eks.Addon(nm('coredns'), {
+  addonName: 'coredns',
+  clusterName: eksCluster.name,
+  addonVersion: eksCluster.version.apply((version) =>
+    aws.eks.getAddonVersion({
+      addonName: 'coredns',
+      kubernetesVersion: version,
+      mostRecent: true,
+    }),
+  ).version,
+})
+
+// === EKS === Addons === EBS CSI Driver ===
+
+const ebsCsiDriverRoleName = nm('ebs-csi-driver-irsa')
+const ebsCsiDriverRole = new aws.iam.Role(ebsCsiDriverRoleName, {
+  assumeRolePolicy: aws.iam.assumeRolePolicyForPrincipal({
+    Service: 'ec2.amazonaws.com',
+  }),
+})
+new aws.iam.RolePolicyAttachment(`${ebsCsiDriverRoleName}-attachment`, {
+  role: ebsCsiDriverRole,
+  policyArn: 'arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy',
+})
+new aws.eks.Addon(nm('ebs-csi-driver'), {
+  addonName: 'aws-ebs-csi-driver',
+  clusterName: eksCluster.name,
+  addonVersion: eksCluster.version.apply(
+    async (kubernetesVersion) =>
+      await aws.eks.getAddonVersion({
+        addonName: 'aws-ebs-csi-driver',
+        kubernetesVersion,
+        mostRecent: true,
+      }),
+  ).version,
+  serviceAccountRoleArn: ebsCsiDriverRole.arn,
+})
+
+// === EKS === Addons === CSI Snapshot Controller ===
+
+new aws.eks.Addon(nm('csi-snapshot-controller'), {
+  addonName: 'snapshot-controller',
+  clusterName: eksCluster.name,
+  addonVersion: eksCluster.version.apply(
+    async (kubernetesVersion) =>
+      await aws.eks.getAddonVersion({
+        addonName: 'snapshot-controller',
+        kubernetesVersion,
+        mostRecent: true,
+      }),
+  ).version,
+})
+
+// === EKS === Addons === Pod Identity Agent ===
+
+new aws.eks.Addon(nm('pod-identity-agent'), {
+  addonName: 'eks-pod-identity-agent',
+  clusterName: eksCluster.name,
+  addonVersion: eksCluster.version.apply(
+    async (kubernetesVersion) =>
+      await aws.eks.getAddonVersion({
+        addonName: 'eks-pod-identity-agent',
+        kubernetesVersion,
+        mostRecent: true,
+      }),
+  ).version,
+})
+
+// === EKS === Addons === KubeCost ===
+
+new aws.eks.Addon(nm('kubecost'), {
+  addonName: 'kubecost_kubecost',
+  clusterName: eksCluster.name,
+  addonVersion: eksCluster.version.apply(
+    async (kubernetesVersion) =>
+      await aws.eks.getAddonVersion({
+        addonName: 'kubecost_kubecost',
+        kubernetesVersion,
+        mostRecent: true,
+      }),
+  ).version,
+})
 
 // === EC2 === Interruption Queue ===
 
@@ -764,7 +742,7 @@ const accountId = await aws.getCallerIdentity().then((identity) => identity.acco
 
 const karpenterControllerPolicyName = nm('karpenter-controller-policy')
 const KarpenterControllerPolicy = new aws.iam.Policy(karpenterControllerPolicyName, {
-  policy: pulumi.all([eksCluster.name, EC2InterruptionQueue.name, eksNodeRole.name]).apply(
+  policy: pulumi.all([eksCluster.name, EC2InterruptionQueue.name, eksInstanceRole.name]).apply(
     ([eksClusterName, ec2InterruptionQueueName, eksNodeRoleName]) =>
       karpenterControllerPolicy({
         partitionId,
@@ -808,6 +786,7 @@ const karpenter = new k8s.helm.v3.Release(
         },
       },
     },
+    timeout: 60 * 30,
   },
   { provider },
 )
@@ -825,7 +804,7 @@ const defaultNodeClass = new k8s.apiextensions.CustomResource(
     spec: {
       amiFamily: 'Bottlerocket',
       // amiFamily: 'AL2023',
-      role: eksNodeRole.name,
+      role: eksInstanceRole.name,
       associatePublicIPAddress: false,
       subnetSelectorTerms: [
         {
@@ -881,10 +860,10 @@ new k8s.apiextensions.CustomResource(
             kind: 'EC2NodeClass',
             name: defaultNodeClass.metadata.name,
           },
-          // https://github.com/bottlerocket-os/bottlerocket/issues/1721
+          // NOTE: https://github.com/bottlerocket-os/bottlerocket/issues/1721
           // kubelet: {
           //   podsPerCore: 20,
-          //   maxPods: 110
+          //   maxPods: 110,
           // },
         },
       },
@@ -903,7 +882,7 @@ new k8s.apiextensions.CustomResource(
 
 // === EKS === ArgoCD ===
 
-new k8s.helm.v3.Release(
+const argocdRelease = new k8s.helm.v3.Release(
   nm('argocd'),
   {
     name: 'argocd',
@@ -945,107 +924,42 @@ new k8s.helm.v3.Release(
       },
     },
     createNamespace: true,
+    timeout: 60 * 30,
   },
   { provider },
 )
 
-// === EKS === ArgoCD === App of Apps ===
+const sdpProjectName = 'sdp'
+const sdpProject = new argocd.AppProject(
+  nm(sdpProjectName),
+  {
+    apiVersion: 'argoproj.io/v1alpha1',
+    kind: 'AppProject',
+    metadata: {
+      namespace: 'argocd',
+      name: sdpProjectName,
+    },
+    spec: {
+      clusterResourceWhitelist: [
+        {
+          group: '*',
+          kind: '*',
+        },
+      ],
+      description: "Software Delivery Platform's project",
+      destinations: [
+        {
+          namespace: '*',
+          server: 'https://kubernetes.default.svc',
+        },
+      ],
+      sourceRepos: ['*'],
+    },
+  },
+  { provider },
+)
 
-// const sdpProject = new argocd.AppProject(
-//   nm('sdp'),
-//   {
-//     apiVersion: 'argoproj.io/v1alpha1',
-//     kind: 'AppProject',
-//     metadata: {
-//       namespace: 'argocd',
-//       name: 'sdp',
-//     },
-//     spec: {
-//       clusterResourceWhitelist: [
-//         {
-//           group: '*',
-//           kind: '*',
-//         },
-//       ],
-//       description: 'default',
-//       destinations: [
-//         {
-//           namespace: '*',
-//           server: 'https://kubernetes.default.svc',
-//         },
-//       ],
-//       orphanedResources: {
-//         warn: true,
-//       },
-//       sourceRepos: ['*'],
-//     },
-//   },
-//   { provider },
-// )
-
-// new argocd.Application(
-//   nm('apps'),
-//   {
-//     apiVersion: 'argoproj.io/v1alpha1',
-//     kind: 'Application',
-//     metadata: {
-//       namespace: 'argocd',
-//       name: 'apps',
-//     },
-//     spec: {
-//       project: 'sdp',
-//       source: {
-//         repoURL: config.git.repo,
-//         path: `${config.git.repo}/apps`,
-//         targetRevision: 'HEAD',
-//         directory: {
-//           recurse: true,
-//         },
-//       },
-//       destination: {
-//         server: 'https://kubernetes.default.svc',
-//       },
-//       syncPolicy: {
-//         automated: {
-//           prune: true,
-//           selfHeal: true,
-//         },
-//         syncOptions: ['CreateNamespace=true', 'ServerSideApply=true'],
-//       },
-//     },
-//   },
-//   { provider },
-// )
-
-// // === EKS === Cert Manager ===
-
-// new argocd.Application(nm('cert-manager'), {
-//   spec: {
-//     destination: {
-//       namespace: 'cert-manager',
-//     },
-//     project: 'sdp',
-//     source: {
-//       repoURL: 'https://charts.jetstack.io',
-//       chart: 'cert-manager',
-//       targetRevision: '*',
-//       helm: {
-//         values: objectToYaml({
-//           installCRDs: true,
-//         }),
-//       },
-//     },
-//     syncPolicy: {
-//       automated: {
-//         prune: true,
-//         selfHeal: true,
-//       },
-//       syncOptions: ['CreateNamespace=true', 'ServerSideApply=true'],
-//     },
-//   },
-// })
-
-// === EKS === External DNS ===
+// === EKS === External DNS === IAM ===
 
 const externalDNSPolicyName = nm('external-dns-policy')
 const externalDNSPolicy = new aws.iam.Policy(externalDNSPolicyName, {
@@ -1080,44 +994,106 @@ new aws.eks.PodIdentityAssociation(nm('external-dns-pod-identity'), {
   serviceAccount: 'external-dns',
   roleArn: externalDNSRole.arn,
 })
+new argocd.Application(
+  nm('external-dns'),
+  {
+    metadata: {
+      name: 'external-dns',
+      namespace: 'argocd',
+    },
+    spec: {
+      project: sdpProjectName,
+      destination: {
+        server: 'https://kubernetes.default.svc',
+        namespace: 'kube-system',
+      },
+      source: {
+        repoURL: 'https://kubernetes-sigs.github.io/external-dns',
+        chart: 'external-dns',
+        targetRevision: '*',
+        helm: {
+          values: pulumi.jsonStringify({
+            serviceAccount: {
+              create: true,
+              name: 'external-dns',
+            },
+          }),
+        },
+      },
+      syncPolicy: {
+        automated: {
+          prune: true,
+          selfHeal: true,
+        },
+        syncOptions: ['ServerSideApply=true'],
+      },
+    },
+  },
+  { provider, dependsOn: [argocdRelease] },
+)
 
-// new ArgoApp('external-dns', {
-//   destination: {
-//     namespace: 'kube-system',
-//   },
-//   project: 'sdp',
-//   source: {
-//     repoURL: 'https://kubernetes-sigs.github.io/external-dns',
-//     chart: 'external-dns',
-//     targetRevision: '*',
-//     helm: {
-//       values: objectToYaml({
-//         serviceAccount: {
-//           create: true,
-//           name: 'external-dns',
-//         },
-//       }),
-//     },
-//   },
-// })
+// === EKS === Metrics Server ===
 
-// === EKS === CloudnativePG ===
+new argocd.Application(
+  nm('metrics-server'),
+  {
+    metadata: {
+      name: 'metrics-server',
+      namespace: 'argocd',
+    },
+    spec: {
+      project: sdpProjectName,
+      destination: {
+        server: 'https://kubernetes.default.svc',
+        namespace: 'kube-system',
+      },
+      source: {
+        repoURL: 'https://kubernetes-sigs.github.io/metrics-server/',
+        chart: 'metrics-server',
+        targetRevision: '*',
+      },
+      syncPolicy: {
+        automated: {
+          prune: true,
+          selfHeal: true,
+        },
+        syncOptions: ['ServerSideApply=true'],
+      },
+    },
+  },
+  { provider, dependsOn: [argocdRelease] },
+)
 
-// new ArgoApp('cloudnative-pg', {
-//   destination: {
-//     namespace: 'cnpg-system',
-//   },
-//   project: 'sdp',
-//   source: {
-//     repoURL: 'https://cloudnative-pg.github.io/charts',
-//     chart: 'cloudnative-pg',
-//     targetRevision: '*',
-//   },
-//   syncPolicy: {
-//     syncOptions: {
-//       CreateNamespace: true,
-//     },
-//   },
-// })
+// === EKS === Kube Prometheus Stack ===
 
-export const kubeconfig = kubeconfigJson
+new argocd.Application(
+  nm('kube-prometheus-stack'),
+  {
+    metadata: {
+      name: 'kube-prometheus-stack',
+      namespace: 'argocd',
+    },
+    spec: {
+      project: sdpProjectName,
+      destination: {
+        server: 'https://kubernetes.default.svc',
+        namespace: 'kube-prometheus',
+      },
+      source: {
+        repoURL: 'https://prometheus-community.github.io/helm-charts',
+        chart: 'kube-prometheus-stack',
+        targetRevision: '*',
+      },
+      syncPolicy: {
+        automated: {
+          prune: true,
+          selfHeal: true,
+        },
+        syncOptions: ['ServerSideApply=true', 'CreateNamespace=true'],
+      },
+    },
+  },
+  { provider, dependsOn: [argocdRelease] },
+)
+
+export { kubeconfig }
