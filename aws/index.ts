@@ -1046,6 +1046,14 @@ new Application(
         repoURL: 'https://charts.jetstack.io',
         chart: 'cert-manager',
         targetRevision: '*',
+        helm: {
+          values: pulumi.jsonStringify({
+            installCRDs: true,
+            prometheus: {
+              enabled: true,
+            },
+          }),
+        },
       },
       syncPolicy: {
         automated: {
