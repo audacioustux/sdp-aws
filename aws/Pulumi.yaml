@@ -3,9 +3,6 @@ description: Software Delivery Platform - AWS Infrastructure
 config:
   pulumi:disable-default-providers:
     - kubernetes
-  pulumi:tags:
-    value:
-      pulumi:template: aws-typescript
 runtime:
   name: nodejs
   options:

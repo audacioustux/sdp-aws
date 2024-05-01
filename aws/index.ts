@@ -6,7 +6,7 @@ import { registerAutoTags } from './utils/autotag.ts'
 import * as config from './config.ts'
 import { assumeRoleForEKSPodIdentity } from './utils/policyStatement.ts'
 import { objectToYaml } from './utils/yaml.ts'
-import { AppProject, Application } from './types/argocd.ts'
+import { AppProject, Application } from './crds/argocd.ts'
 
 // Automatically inject tags.
 registerAutoTags({
@@ -48,7 +48,6 @@ const publicSubnets = availabilityZones.names.map((az, index) => {
     },
   })
 })
-
 const privateSubnets = availabilityZones.names.map((az, index) => {
   const subnetName = nm(`private-${index}`)
   return new aws.ec2.Subnet(subnetName, {
@@ -187,6 +186,8 @@ const {
   defaultAddonsToRemove: ['kube-proxy', 'vpc-cni', 'coredns'],
   useDefaultVpcCni: true,
   skipDefaultNodeGroup: true,
+  // TODO: disable public access to the cluster (use vpc client endpoint instead)
+  // endpointPublicAccess: false,
   nodeGroupOptions: {
     taints: {
       'node.cilium.io/agent-not-ready': {
@@ -335,21 +336,6 @@ new aws.eks.Addon(nm('pod-identity-agent'), {
     async (kubernetesVersion) =>
       await aws.eks.getAddonVersion({
         addonName: 'eks-pod-identity-agent',
-        kubernetesVersion,
-        mostRecent: true,
-      }),
-  ).version,
-})
-
-// === EKS === Addons === KubeCost ===
-
-new aws.eks.Addon(nm('kubecost'), {
-  addonName: 'kubecost_kubecost',
-  clusterName: eksCluster.name,
-  addonVersion: eksCluster.version.apply(
-    async (kubernetesVersion) =>
-      await aws.eks.getAddonVersion({
-        addonName: 'kubecost_kubecost',
         kubernetesVersion,
         mostRecent: true,
       }),
@@ -1131,4 +1117,111 @@ new Application(
   { provider, dependsOn: [argocdRelease] },
 )
 
-export { kubeconfig }
+// === EKS === External Secrets ===
+
+new Application(
+  nm('external-secrets'),
+  {
+    metadata: {
+      name: 'external-secrets',
+      namespace: 'argocd',
+    },
+    spec: {
+      project: sdpProjectName,
+      destination: {
+        server: 'https://kubernetes.default.svc',
+        namespace: 'kube-system',
+      },
+      source: {
+        repoURL: 'https://charts.external-secrets.io',
+        chart: 'external-secrets',
+        targetRevision: '*',
+        helm: {
+          values: pulumi.jsonStringify({
+            installCRDs: true,
+          }),
+        },
+      },
+      syncPolicy: {
+        automated: {
+          prune: true,
+          selfHeal: true,
+        },
+        syncOptions: ['ServerSideApply=true'],
+      },
+    },
+  },
+  { provider, dependsOn: [argocdRelease] },
+)
+
+const esoSARole = new aws.iam.Role(nm('external-secrets-role'), {
+  assumeRolePolicy: assumeRoleForEKSPodIdentity(),
+})
+const esoRoleName = nm('external-secrets-operator-role')
+const esoRole = new aws.iam.Role(esoRoleName, {
+  assumeRolePolicy: {
+    Version: '2012-10-17',
+    Statement: [
+      {
+        Action: ['sts:AssumeRole', 'sts:TagSession'],
+        Effect: 'Allow',
+        Principal: {
+          AWS: esoSARole.arn,
+        },
+      },
+    ],
+  },
+})
+const esoPolicyName = nm('external-secrets-policy')
+const esoPolicy = new aws.iam.Policy(esoPolicyName, {
+  policy: aws.iam
+    .getPolicyDocument({
+      statements: [
+        {
+          effect: 'Allow',
+          actions: [
+            'secretsmanager:GetResourcePolicy',
+            'secretsmanager:GetSecretValue',
+            'secretsmanager:DescribeSecret',
+            'secretsmanager:ListSecretVersionIds',
+            'secretsmanager:ListSecrets',
+          ],
+          resources: ['*'],
+        },
+      ],
+    })
+    .then((doc) => doc.json),
+})
+new aws.iam.RolePolicyAttachment(esoRoleName, {
+  policyArn: esoPolicy.arn,
+  role: esoRole,
+})
+new aws.eks.PodIdentityAssociation(nm('external-secrets-pod-identity'), {
+  clusterName: eksCluster.name,
+  namespace: 'kube-system',
+  serviceAccount: 'external-secrets',
+  roleArn: esoSARole.arn,
+})
+new k8s.apiextensions.CustomResource(
+  nm('aws-secrets-store'),
+  {
+    apiVersion: 'external-secrets.io/v1beta1',
+    kind: 'SecretStore',
+    metadata: {
+      name: 'aws-secrets-store',
+      namespace: 'kube-system',
+    },
+    spec: {
+      provider: {
+        aws: {
+          service: 'SecretsManager',
+          region: regionId,
+          role: esoRole.arn,
+        },
+      },
+    },
+  },
+  { provider },
+)
+
+export { kubeconfig, vpc, publicRouteTable, privateRouteTable }
