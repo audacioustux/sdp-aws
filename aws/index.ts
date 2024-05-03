@@ -17,8 +17,6 @@ registerAutoTags({
 
 const nm = (name: string) => `${config.pulumi.project}-${config.pulumi.stack}-${name}`
 
-const eksClusterName = nm('eks')
-
 // === VPC ===
 
 const vpcName = nm('vpc')
@@ -57,7 +55,6 @@ const privateSubnets = availabilityZones.names.map((az, index) => {
     mapPublicIpOnLaunch: false,
     tags: {
       Name: subnetName,
-      'karpenter.sh/discovery': eksClusterName,
     },
   })
 })
@@ -169,6 +166,7 @@ const eksInstanceRole = new aws.iam.Role(nm('eks-instance-role'), {
   ],
 })
 
+const eksClusterName = nm('eks')
 const {
   eksCluster,
   core: cluster,
@@ -842,6 +840,7 @@ new k8s.apiextensions.CustomResource(
             name: defaultNodeClass.metadata.name,
           },
           // NOTE: https://github.com/bottlerocket-os/bottlerocket/issues/1721
+          // TODO: enable this once pod right-sizing is implemented
           // kubelet: {
           //   podsPerCore: 20,
           //   maxPods: 110,
@@ -919,6 +918,7 @@ const sdpProject = new AppProject(
     metadata: {
       namespace: 'argocd',
       name: sdpProjectName,
+      finalizers: ['resources-finalizer.argocd.argoproj.io'],
     },
     spec: {
       clusterResourceWhitelist: [
@@ -981,6 +981,7 @@ new Application(
     metadata: {
       name: 'external-dns',
       namespace: 'argocd',
+      finalizers: ['resources-finalizer.argocd.argoproj.io'],
     },
     spec: {
       project: sdpProjectName,
@@ -1021,6 +1022,7 @@ new Application(
     metadata: {
       name: 'cert-manager',
       namespace: 'argocd',
+      finalizers: ['resources-finalizer.argocd.argoproj.io'],
     },
     spec: {
       project: sdpProjectName,
@@ -1037,6 +1039,18 @@ new Application(
             installCRDs: true,
             prometheus: {
               enabled: true,
+              servicemonitor: {
+                enabled: true,
+              },
+            },
+            enableCertificateOwnerRef: true,
+            extraArgs: [
+              '--enable-certificate-owner-ref=true',
+              '--dns01-recursive-nameservers-only',
+              '--dns01-recursive-nameservers=8.8.8.8:53,1.1.1.1:53',
+            ],
+            securityContext: {
+              fsGroup: 1001,
             },
           }),
         },
@@ -1053,6 +1067,44 @@ new Application(
   { provider, dependsOn: [argocdRelease] },
 )
 
+const certManagerDns01Policy = new aws.iam.Policy(nm('cert-manager-dns01-policy'), {
+  policy: aws.iam
+    .getPolicyDocument({
+      statements: [
+        {
+          effect: 'Allow',
+          actions: ['route53:GetChange'],
+          resources: ['arn:aws:route53:::change/*'],
+        },
+        {
+          effect: 'Allow',
+          actions: ['route53:ChangeResourceRecordSets', 'route53:ListResourceRecordSets'],
+          resources: ['arn:aws:route53:::hostedzone/*'],
+        },
+        {
+          effect: 'Allow',
+          actions: ['route53:ListHostedZonesByName'],
+          resources: ['*'],
+        },
+      ],
+    })
+    .then((doc) => doc.json),
+})
+const certManagerDns01RoleName = nm('cert-manager-dns01-role')
+const certManagerDns01Role = new aws.iam.Role(certManagerDns01RoleName, {
+  assumeRolePolicy: assumeRoleForEKSPodIdentity(),
+})
+new aws.iam.RolePolicyAttachment(nm('cert-manager-dns01-role-policy'), {
+  policyArn: certManagerDns01Policy.arn,
+  role: certManagerDns01Role,
+})
+new aws.eks.PodIdentityAssociation(nm('cert-manager-dns01-pod-identity'), {
+  clusterName: eksCluster.name,
+  namespace: 'cert-manager',
+  serviceAccount: 'cert-manager',
+  roleArn: certManagerDns01Role.arn,
+})
+
 // === EKS === Metrics Server ===
 
 new Application(
@@ -1061,6 +1113,7 @@ new Application(
     metadata: {
       name: 'metrics-server',
       namespace: 'argocd',
+      finalizers: ['resources-finalizer.argocd.argoproj.io'],
     },
     spec: {
       project: sdpProjectName,
@@ -1087,12 +1140,14 @@ new Application(
 
 // === EKS === Kube Prometheus Stack ===
 
+// NOTE: https://github.com/argoproj/argo-cd/issues/6880
 new Application(
   nm('kube-prometheus-stack'),
   {
     metadata: {
       name: 'kube-prometheus-stack',
       namespace: 'argocd',
+      finalizers: ['resources-finalizer.argocd.argoproj.io'],
     },
     spec: {
       project: sdpProjectName,
@@ -1110,7 +1165,7 @@ new Application(
           prune: true,
           selfHeal: true,
         },
-        syncOptions: ['ServerSideApply=true', 'CreateNamespace=true'],
+        syncOptions: ['ServerSideApply=true', 'CreateNamespace=true', 'PruneLast=true'],
       },
     },
   },
@@ -1125,6 +1180,7 @@ new Application(
     metadata: {
       name: 'external-secrets',
       namespace: 'argocd',
+      finalizers: ['resources-finalizer.argocd.argoproj.io'],
     },
     spec: {
       project: sdpProjectName,
@@ -1206,7 +1262,7 @@ new k8s.apiextensions.CustomResource(
   nm('aws-secrets-store'),
   {
     apiVersion: 'external-secrets.io/v1beta1',
-    kind: 'SecretStore',
+    kind: 'ClusterSecretStore',
     metadata: {
       name: 'aws-secrets-store',
       namespace: 'kube-system',
@@ -1224,4 +1280,10 @@ new k8s.apiextensions.CustomResource(
   { provider },
 )
 
+export const eso = {
+  clusterSecretStore: {
+    aws: 'aws-secrets-store',
+  },
+}
+// TODO: narrow down, or export all
 export { kubeconfig, vpc, publicRouteTable, privateRouteTable }
