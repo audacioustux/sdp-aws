@@ -13,7 +13,7 @@ tasks:
     silent: true
 
   format:
-    deps: [sdp:format]
+    deps: [aws:format]
 
   # miscellanea
   k9s: k9s -A --headless --crumbsless

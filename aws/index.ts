@@ -5,7 +5,6 @@ import * as k8s from '@pulumi/kubernetes'
 import { registerAutoTags } from './utils/autotag.ts'
 import * as config from './config.ts'
 import { assumeRoleForEKSPodIdentity } from './utils/policyStatement.ts'
-import { objectToYaml } from './utils/yaml.ts'
 import { AppProject, Application } from './crds/argocd.ts'
 
 // Automatically inject tags.
@@ -910,7 +909,7 @@ const argocdRelease = new k8s.helm.v3.Release(
 )
 
 const sdpProjectName = 'sdp'
-const sdpProject = new AppProject(
+new AppProject(
   nm(sdpProjectName),
   {
     apiVersion: 'argoproj.io/v1alpha1',

@@ -6,6 +6,9 @@ import eslintPluginPrettierRecommended from 'eslint-plugin-prettier/recommended'
 
 export default [
   {
+    ignores: ['crds/*'],
+  },
+  {
     languageOptions: {
       globals: globals.node,
     },
