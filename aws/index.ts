@@ -196,6 +196,8 @@ const {
   instanceRole: eksInstanceRole,
 })
 
+const clusterSecurityGroupId = eksCluster.vpcConfig.clusterSecurityGroupId
+
 // === EKS === Node Group ===
 
 const highPriorityNodeGroupName = nm('high-priority')
@@ -784,18 +786,12 @@ const defaultNodeClass = new k8s.apiextensions.CustomResource(
       // amiFamily: 'AL2023',
       role: eksInstanceRole.name,
       associatePublicIPAddress: false,
-      subnetSelectorTerms: [
-        {
-          tags: {
-            'karpenter.sh/discovery': eksCluster.name,
-          },
-        },
-      ],
+      subnetSelectorTerms: privateSubnets.map((subnet) => ({
+        id: subnet.id,
+      })),
       securityGroupSelectorTerms: [
         {
-          tags: {
-            'aws:eks:cluster-name': eksCluster.name,
-          },
+          id: clusterSecurityGroupId,
         },
       ],
     },
@@ -1284,5 +1280,6 @@ export const eso = {
     aws: 'aws-secrets-store',
   },
 }
+
 // TODO: narrow down, or export all
-export { kubeconfig, vpc, publicRouteTable, privateRouteTable }
+export { kubeconfig, vpc, publicRouteTable, privateRouteTable, clusterSecurityGroupId }
