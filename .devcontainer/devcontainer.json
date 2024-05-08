@@ -1,7 +1,7 @@
 {
-  "name": "Dev Container - ZeroAWS",
+  "name": "Dev Container",
   "dockerComposeFile": "compose.yml",
-  "service": "devcontainer",
+  "service": "zeroaws",
   "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
   "customizations": {
     "vscode": {
