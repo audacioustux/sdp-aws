@@ -1,5 +1,5 @@
 {
-  "name": "Dev Container",
+  "name": "Dev Container - ZeroAWS",
   "dockerComposeFile": "compose.yml",
   "service": "devcontainer",
   "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
