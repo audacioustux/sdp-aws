@@ -15,8 +15,17 @@ tasks:
   format:
     deps: [aws:format]
 
+  deps:
+    cmds:
+      - echo "Setting default Pulumi organization to - $PULUMI_DEFAULT_ORG"
+      - pulumi org set-default $PULUMI_DEFAULT_ORG
+
+  up:
+    cmds: 
+      - task deps
+      - task aws:up -- -r {{.CLI_ARGS}}
+
   # miscellanea
-  k9s: k9s -A --headless --crumbsless
   cloc: cloc . --vcs git
   ecr:login: aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin 343301376154.dkr.ecr.ap-south-1.amazonaws.com
   argocd:pass: kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
@@ -24,3 +33,7 @@ tasks:
   kubeconfig:update:
     dir: aws
     cmd: mkdir -p ~/.kube && pulumi stack -s prod output kubeconfig > ~/.kube/config
+    generates: [~/.kube/config]
+  k9s: 
+    deps: [kubeconfig:update]
+    cmd: k9s -A --headless --crumbsless

@@ -93,15 +93,14 @@ const natGateway = new aws.ec2.NatGateway(natGatewayName, {
 const publicRouteTableName = nm('public')
 const publicRouteTable = new aws.ec2.RouteTable(publicRouteTableName, {
   vpcId: vpc.id,
-  routes: [
-    {
-      cidrBlock: '0.0.0.0/0',
-      gatewayId: internetGateway.id,
-    },
-  ],
   tags: {
     Name: publicRouteTableName,
   },
+})
+new aws.ec2.Route(nm('to-igw'), {
+  routeTableId: publicRouteTable.id,
+  destinationCidrBlock: '0.0.0.0/0',
+  gatewayId: internetGateway.id,
 })
 publicSubnets.map((subnet, index) => {
   return new aws.ec2.RouteTableAssociation(
@@ -117,15 +116,14 @@ publicSubnets.map((subnet, index) => {
 const privateRouteTableName = nm('private')
 const privateRouteTable = new aws.ec2.RouteTable(privateRouteTableName, {
   vpcId: vpc.id,
-  routes: [
-    {
-      cidrBlock: '0.0.0.0/0',
-      natGatewayId: natGateway.id,
-    },
-  ],
   tags: {
     Name: privateRouteTableName,
   },
+})
+new aws.ec2.Route(nm('to-nat'), {
+  routeTableId: privateRouteTable.id,
+  destinationCidrBlock: '0.0.0.0/0',
+  natGatewayId: natGateway.id,
 })
 privateSubnets.map((subnet, index) => {
   return new aws.ec2.RouteTableAssociation(
@@ -285,13 +283,55 @@ new aws.eks.Addon(nm('coredns'), {
   ).version,
 })
 
+// === EKS === Addons === Pod Identity Agent ===
+
+new aws.eks.Addon(nm('pod-identity-agent'), {
+  addonName: 'eks-pod-identity-agent',
+  clusterName: eksCluster.name,
+  addonVersion: eksCluster.version.apply(
+    async (kubernetesVersion) =>
+      await aws.eks.getAddonVersion({
+        addonName: 'eks-pod-identity-agent',
+        kubernetesVersion,
+        mostRecent: true,
+      }),
+  ).version,
+})
+
 // === EKS === Addons === EBS CSI Driver ===
 
 const ebsCsiDriverRoleName = nm('ebs-csi-driver-irsa')
 const ebsCsiDriverRole = new aws.iam.Role(ebsCsiDriverRoleName, {
-  assumeRolePolicy: aws.iam.assumeRolePolicyForPrincipal({
-    Service: 'ec2.amazonaws.com',
-  }),
+  assumeRolePolicy: pulumi.all([cluster.oidcProvider?.url, cluster.oidcProvider?.arn]).apply(([url, arn]) => {
+    if (!url || !arn) throw new Error('OIDC provider URL or ARN is undefined')
+
+    return aws.iam.getPolicyDocumentOutput({
+      statements: [
+        {
+          effect: 'Allow',
+          actions: ['sts:AssumeRoleWithWebIdentity'],
+          principals: [
+            {
+              type: 'Federated',
+              identifiers: [arn],
+            },
+          ],
+          conditions: [
+            {
+              test: 'StringEquals',
+              variable: `${url.replace('https://', '')}:sub`,
+              values: ['system:serviceaccount:kube-system:ebs-csi-controller-sa'],
+            },
+            {
+              test: 'StringEquals',
+              variable: `${url.replace('https://', '')}:aud`,
+              values: ['sts.amazonaws.com'],
+            },
+          ],
+        },
+      ],
+    })
+  }).json,
 })
 new aws.iam.RolePolicyAttachment(`${ebsCsiDriverRoleName}-attachment`, {
   role: ebsCsiDriverRole,
@@ -311,6 +351,59 @@ new aws.eks.Addon(nm('ebs-csi-driver'), {
   serviceAccountRoleArn: ebsCsiDriverRole.arn,
 })
 
+// === EKS === Addons === EFS CSI Driver ===
+
+const efsCsiDriverRoleName = nm('efs-csi-driver-irsa')
+const efsCsiDriverRole = new aws.iam.Role(efsCsiDriverRoleName, {
+  assumeRolePolicy: pulumi.all([cluster.oidcProvider?.url, cluster.oidcProvider?.arn]).apply(([url, arn]) => {
+    if (!url || !arn) throw new Error('OIDC provider URL or ARN is undefined')
+
+    return aws.iam.getPolicyDocumentOutput({
+      statements: [
+        {
+          effect: 'Allow',
+          actions: ['sts:AssumeRoleWithWebIdentity'],
+          principals: [
+            {
+              type: 'Federated',
+              identifiers: [arn],
+            },
+          ],
+          conditions: [
+            {
+              test: 'StringLike',
+              variable: `${url.replace('https://', '')}:sub`,
+              values: ['system:serviceaccount:kube-system:efs-csi-*'],
+            },
+            {
+              test: 'StringEquals',
+              variable: `${url.replace('https://', '')}:aud`,
+              values: ['sts.amazonaws.com'],
+            },
+          ],
+        },
+      ],
+    })
+  }).json,
+})
+new aws.iam.RolePolicyAttachment(`${efsCsiDriverRoleName}-attachment`, {
+  role: efsCsiDriverRole,
+  policyArn: 'arn:aws:iam::aws:policy/service-role/AmazonEFSCSIDriverPolicy',
+})
+new aws.eks.Addon(nm('efs-csi-driver'), {
+  addonName: 'aws-efs-csi-driver',
+  clusterName: eksCluster.name,
+  addonVersion: eksCluster.version.apply(
+    async (kubernetesVersion) =>
+      await aws.eks.getAddonVersion({
+        addonName: 'aws-efs-csi-driver',
+        kubernetesVersion,
+        mostRecent: true,
+      }),
+  ).version,
+  serviceAccountRoleArn: efsCsiDriverRole.arn,
+})
+
 // === EKS === Addons === CSI Snapshot Controller ===
 
 new aws.eks.Addon(nm('csi-snapshot-controller'), {
@@ -320,21 +413,6 @@ new aws.eks.Addon(nm('csi-snapshot-controller'), {
     async (kubernetesVersion) =>
       await aws.eks.getAddonVersion({
         addonName: 'snapshot-controller',
-        kubernetesVersion,
-        mostRecent: true,
-      }),
-  ).version,
-})
-
-// === EKS === Addons === Pod Identity Agent ===
-
-new aws.eks.Addon(nm('pod-identity-agent'), {
-  addonName: 'eks-pod-identity-agent',
-  clusterName: eksCluster.name,
-  addonVersion: eksCluster.version.apply(
-    async (kubernetesVersion) =>
-      await aws.eks.getAddonVersion({
-        addonName: 'eks-pod-identity-agent',
         kubernetesVersion,
         mostRecent: true,
       }),
@@ -857,7 +935,7 @@ new k8s.apiextensions.CustomResource(
 
 // === EKS === ArgoCD ===
 
-const argocdRelease = new k8s.helm.v3.Release(
+new k8s.helm.v3.Release(
   nm('argocd'),
   {
     name: 'argocd',
@@ -905,7 +983,8 @@ const argocdRelease = new k8s.helm.v3.Release(
 )
 
 const sdpProjectName = 'sdp'
-new AppProject(
+// TODO: depend on sdpProject without explicitly declaring in `dependsOn` on Application resources
+const sdpProject = new AppProject(
   nm(sdpProjectName),
   {
     apiVersion: 'argoproj.io/v1alpha1',
@@ -1006,7 +1085,7 @@ new Application(
       },
     },
   },
-  { provider, dependsOn: [argocdRelease] },
+  { provider, dependsOn: [sdpProject] },
 )
 
 // === EKS === Cert Manager ===
@@ -1059,7 +1138,7 @@ new Application(
       },
     },
   },
-  { provider, dependsOn: [argocdRelease] },
+  { provider, dependsOn: [sdpProject] },
 )
 
 const certManagerDns01Policy = new aws.iam.Policy(nm('cert-manager-dns01-policy'), {
@@ -1130,7 +1209,7 @@ new Application(
       },
     },
   },
-  { provider, dependsOn: [argocdRelease] },
+  { provider, dependsOn: [sdpProject] },
 )
 
 // === EKS === Kube Prometheus Stack ===
@@ -1164,7 +1243,7 @@ new Application(
       },
     },
   },
-  { provider, dependsOn: [argocdRelease] },
+  { provider, dependsOn: [sdpProject] },
 )
 
 // === EKS === External Secrets ===
@@ -1202,7 +1281,7 @@ new Application(
       },
     },
   },
-  { provider, dependsOn: [argocdRelease] },
+  { provider, dependsOn: [sdpProject] },
 )
 
 const esoSARole = new aws.iam.Role(nm('external-secrets-role'), {
@@ -1275,11 +1354,46 @@ new k8s.apiextensions.CustomResource(
   { provider },
 )
 
+// === EKS === EFS ===
+
+const efs = new aws.efs.FileSystem(nm('efs'), {
+  encrypted: true,
+  kmsKeyId: kmsKey.arn,
+  performanceMode: 'generalPurpose',
+  throughputMode: 'elastic',
+  tags: {
+    Name: nm('efs'),
+  },
+})
+privateSubnets.forEach((subnet, index) => {
+  new aws.efs.MountTarget(nm(`efs-${index}`), {
+    fileSystemId: efs.id,
+    subnetId: subnet.id,
+    securityGroups: [clusterSecurityGroupId],
+  })
+})
+new k8s.storage.v1.StorageClass(
+  nm('efs'),
+  {
+    metadata: {
+      name: 'efs',
+    },
+    provisioner: 'efs.csi.aws.com',
+    volumeBindingMode: 'WaitForFirstConsumer',
+    parameters: {
+      fileSystemId: efs.id,
+      provisioningMode: 'efs-ap',
+      directoryPerms: '755',
+    },
+  },
+  { provider },
+)
+
 export const eso = {
   clusterSecretStore: {
     aws: 'aws-secrets-store',
   },
 }
 
-// TODO: narrow down, or export all
-export { kubeconfig, vpc, publicRouteTable, privateRouteTable, clusterSecurityGroupId }
+// TODO: export all
+export { kubeconfig, vpc, publicRouteTable, privateRouteTable, clusterSecurityGroupId, k8sServiceHosts }
