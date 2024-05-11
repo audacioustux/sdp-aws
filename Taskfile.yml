@@ -12,13 +12,19 @@ tasks:
     cmd: task --list-all
     silent: true
 
-  format:
-    deps: [aws:format]
-
-  deps:
+  pulumi:org:set-default:
     cmds:
       - echo "Setting default Pulumi organization to - $PULUMI_DEFAULT_ORG"
       - pulumi org set-default $PULUMI_DEFAULT_ORG
+
+  deps:
+    deps: 
+      - pulumi:org:set-default
+      - aws:deps
+
+  format:
+    deps: 
+      - aws:format
 
   up:
     cmds: 
@@ -27,13 +33,20 @@ tasks:
 
   # miscellanea
   cloc: cloc . --vcs git
+  aws:login: aws configure sso --profile default
   ecr:login: aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin 343301376154.dkr.ecr.ap-south-1.amazonaws.com
-  argocd:pass: kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
-  argocd:expose: kubectl port-forward svc/argocd-server -n argocd 8080:443
   kubeconfig:update:
     dir: aws
     cmd: mkdir -p ~/.kube && pulumi stack -s prod output kubeconfig > ~/.kube/config
     generates: [~/.kube/config]
+  argocd:password:
+    deps: [kubeconfig:update]
+    cmd: kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
+  argocd:expose: 
+    deps: [kubeconfig:update]
+    cmds: 
+      - echo "ArgoCD password - $(task argocd:password)"
+      - kubectl port-forward svc/argocd-server -n argocd 8080:443
   k9s: 
     deps: [kubeconfig:update]
     cmd: k9s -A --headless --crumbsless
