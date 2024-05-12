@@ -404,6 +404,59 @@ new aws.eks.Addon(nm('efs-csi-driver'), {
   serviceAccountRoleArn: efsCsiDriverRole.arn,
 })
 
+// === EKS === Addons === S3 Mountpoint Driver ===
+
+const s3MountpointDriverRoleName = nm('s3-mountpoint-driver-irsa')
+const s3MountpointDriverRole = new aws.iam.Role(s3MountpointDriverRoleName, {
+  assumeRolePolicy: pulumi.all([cluster.oidcProvider?.url, cluster.oidcProvider?.arn]).apply(([url, arn]) => {
+    if (!url || !arn) throw new Error('OIDC provider URL or ARN is undefined')
+
+    return aws.iam.getPolicyDocumentOutput({
+      statements: [
+        {
+          effect: 'Allow',
+          actions: ['sts:AssumeRoleWithWebIdentity'],
+          principals: [
+            {
+              type: 'Federated',
+              identifiers: [arn],
+            },
+          ],
+          conditions: [
+            {
+              test: 'StringEquals',
+              variable: `${url.replace('https://', '')}:sub`,
+              values: ['system:serviceaccount:kube-system:s3-csi-driver-sa'],
+            },
+            {
+              test: 'StringEquals',
+              variable: `${url.replace('https://', '')}:aud`,
+              values: ['sts.amazonaws.com'],
+            },
+          ],
+        },
+      ],
+    })
+  }).json,
+})
+new aws.iam.RolePolicyAttachment(`${s3MountpointDriverRoleName}-attachment`, {
+  role: s3MountpointDriverRole,
+  policyArn: aws.iam.ManagedPolicies.AmazonS3FullAccess,
+})
+new aws.eks.Addon(nm('s3-mountpoint-driver'), {
+  addonName: 'aws-mountpoint-s3-csi-driver',
+  clusterName: eksCluster.name,
+  addonVersion: eksCluster.version.apply(
+    async (kubernetesVersion) =>
+      await aws.eks.getAddonVersion({
+        addonName: 'aws-mountpoint-s3-csi-driver',
+        kubernetesVersion,
+        mostRecent: true,
+      }),
+  ).version,
+  serviceAccountRoleArn: s3MountpointDriverRole.arn,
+})
+
 // === EKS === Addons === CSI Snapshot Controller ===
 
 new aws.eks.Addon(nm('csi-snapshot-controller'), {
