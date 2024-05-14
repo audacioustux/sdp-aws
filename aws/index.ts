@@ -214,6 +214,22 @@ new eks.ManagedNodeGroup(highPriorityNodeGroupName, {
   },
 })
 
+// NOTE: till Dec 31 '24, t4g.small is free
+const freeT4gNodeGroupName = nm('free-t4g')
+new eks.ManagedNodeGroup(freeT4gNodeGroupName, {
+  nodeGroupName: freeT4gNodeGroupName,
+  cluster,
+  instanceTypes: ['t4g.small'],
+  capacityType: 'ON_DEMAND',
+  amiType: 'BOTTLEROCKET_ARM_64',
+  nodeRole: cluster.instanceRoles[0],
+  scalingConfig: {
+    minSize: 1,
+    maxSize: 1,
+    desiredSize: 1,
+  },
+})
+
 // === EKS === Cilium ===
 
 const k8sServiceHosts = k8s.core.v1.Endpoints.get('kubernetes-endpoint', 'kubernetes', { provider }).subsets.apply(
