@@ -15,6 +15,7 @@ registerAutoTags({
 })
 
 const nm = (name: string) => `${config.pulumi.project}-${config.pulumi.stack}-${name}`
+const nmo = (name: string) => `${nm(name)}-${config.pulumi.organization}`
 
 // === VPC ===
 
@@ -204,8 +205,8 @@ new eks.ManagedNodeGroup(highPriorityNodeGroupName, {
   cluster,
   instanceTypes: ['m7g.large', 't4g.large'],
   capacityType: 'SPOT',
-  amiType: 'BOTTLEROCKET_ARM_64',
-  // amiType: 'AL2023_ARM_64_STANDARD',
+  // amiType: 'BOTTLEROCKET_ARM_64',
+  amiType: 'AL2023_ARM_64_STANDARD',
   nodeRole: cluster.instanceRoles[0],
   scalingConfig: {
     minSize: 2,
@@ -215,38 +216,38 @@ new eks.ManagedNodeGroup(highPriorityNodeGroupName, {
 })
 
 // NOTE: till Dec 31 '24, t4g.small is free
-const freeT4gNodeGroupName = nm('free-t4g')
-new eks.ManagedNodeGroup(freeT4gNodeGroupName, {
-  nodeGroupName: freeT4gNodeGroupName,
-  cluster,
-  instanceTypes: ['t4g.small'],
-  capacityType: 'ON_DEMAND',
-  amiType: 'BOTTLEROCKET_ARM_64',
-  nodeRole: cluster.instanceRoles[0],
-  scalingConfig: {
-    minSize: 1,
-    maxSize: 1,
-    desiredSize: 1,
-  },
-})
+// NOTE: daemonsets takes up most resources in t4g.small
+// const freeT4gNodeGroupName = nm('free-t4g')
+// new eks.ManagedNodeGroup(freeT4gNodeGroupName, {
+//   nodeGroupName: freeT4gNodeGroupName,
+//   cluster,
+//   instanceTypes: ['t4g.small'],
+//   capacityType: 'ON_DEMAND',
+//   // amiType: 'BOTTLEROCKET_ARM_64',
+//   amiType: 'AL2023_ARM_64_STANDARD',
+//   nodeRole: cluster.instanceRoles[0],
+//   scalingConfig: {
+//     minSize: 1,
+//     maxSize: 1,
+//     desiredSize: 1,
+//   },
+// })
 
 // === EKS === Cilium ===
 
-const k8sServiceHosts = k8s.core.v1.Endpoints.get('kubernetes-endpoint', 'kubernetes', { provider }).subsets.apply(
-  (subsets) => subsets.map((subset) => subset.addresses.map((address) => address.ip)).flat(),
-)
 new k8s.helm.v3.Release(
   nm('cilium'),
   {
     name: 'cilium',
     chart: 'cilium',
     namespace: 'kube-system',
+    version: '1.15.5',
     repositoryOpts: {
       repo: 'https://helm.cilium.io',
     },
     values: {
       kubeProxyReplacement: 'strict',
-      k8sServiceHost: k8sServiceHosts[0],
+      k8sServiceHost: cluster.endpoint.apply((endpoint) => endpoint.replace('https://', '')),
       ingressController: {
         enabled: true,
         loadbalancerMode: 'shared',
@@ -262,6 +263,8 @@ new k8s.helm.v3.Release(
       },
       loadBalancer: {
         algorithm: 'maglev',
+        mode: 'hybrid',
+        acceleration: 'best-effort',
         l7: {
           backend: 'envoy',
         },
@@ -272,6 +275,9 @@ new k8s.helm.v3.Release(
       routingMode: 'native',
       bpf: {
         masquerade: true,
+        // NOTE: https://github.com/cilium/cilium/issues/20942
+        // https://github.com/cilium/cilium/issues/20677
+        // hostLegacyRouting: true,
       },
       ipam: {
         mode: 'eni',
@@ -365,6 +371,7 @@ new aws.eks.Addon(nm('ebs-csi-driver'), {
       }),
   ).version,
   serviceAccountRoleArn: ebsCsiDriverRole.arn,
+  resolveConflictsOnUpdate: 'OVERWRITE',
 })
 
 // === EKS === Addons === EFS CSI Driver ===
@@ -912,6 +919,9 @@ const karpenter = new k8s.helm.v3.Release(
           spotToSpotConsolidation: true,
         },
       },
+      serviceMonitor: {
+        enabled: true,
+      },
     },
     timeout: 60 * 30,
   },
@@ -929,8 +939,8 @@ const defaultNodeClass = new k8s.apiextensions.CustomResource(
       name: 'default',
     },
     spec: {
-      amiFamily: 'Bottlerocket',
-      // amiFamily: 'AL2023',
+      // amiFamily: 'Bottlerocket',
+      amiFamily: 'AL2023',
       role: eksInstanceRole.name,
       associatePublicIPAddress: false,
       subnetSelectorTerms: privateSubnets.map((subnet) => ({
@@ -982,16 +992,22 @@ new k8s.apiextensions.CustomResource(
             name: defaultNodeClass.metadata.name,
           },
           // NOTE: https://github.com/bottlerocket-os/bottlerocket/issues/1721
-          // TODO: enable this once pod right-sizing is implemented
-          // kubelet: {
-          //   podsPerCore: 20,
-          //   maxPods: 110,
-          // },
+          kubelet: {
+            podsPerCore: 20,
+            maxPods: 110,
+          },
+          startupTaints: [
+            {
+              key: 'node.cilium.io/agent-not-ready',
+              value: 'true',
+              effect: 'NoExecute',
+            },
+          ],
         },
       },
       limits: {
         cpu: '16',
-        memory: '32Gi',
+        memory: '48Gi',
       },
       disruption: {
         consolidationPolicy: 'WhenUnderutilized',
@@ -1022,27 +1038,6 @@ new k8s.helm.v3.Release(
             password: config.git.password,
           },
         },
-      },
-      'redis-ha': {
-        enabled: true,
-      },
-      controller: {
-        replicas: 1,
-      },
-      server: {
-        autoscaling: {
-          enabled: true,
-          minReplicas: 2,
-        },
-      },
-      repoServer: {
-        autoscaling: {
-          enabled: true,
-          minReplicas: 2,
-        },
-      },
-      applicationSet: {
-        replicas: 2,
       },
     },
     createNamespace: true,
@@ -1283,7 +1278,12 @@ new Application(
 
 // === EKS === Kube Prometheus Stack ===
 
-// NOTE: https://github.com/argoproj/argo-cd/issues/6880
+const monitoringNamespace = new k8s.core.v1.Namespace(
+  nm('monitoring'),
+  { metadata: { name: 'monitoring' } },
+  { provider },
+)
+
 new Application(
   nm('kube-prometheus-stack'),
   {
@@ -1296,12 +1296,243 @@ new Application(
       project: sdpProjectName,
       destination: {
         server: 'https://kubernetes.default.svc',
-        namespace: 'kube-prometheus',
+        namespace: monitoringNamespace.metadata.name,
       },
       source: {
         repoURL: 'https://prometheus-community.github.io/helm-charts',
         chart: 'kube-prometheus-stack',
         targetRevision: '*',
+        helm: {
+          values: pulumi.jsonStringify({
+            prometheus: {
+              prometheusSpec: {
+                serviceMonitorSelectorNilUsesHelmValues: false,
+                podMonitorSelectorNilUsesHelmValues: false,
+              },
+            },
+            prometheusOperator: {
+              admissionWebhooks: {
+                certManager: {
+                  enabled: true,
+                },
+              },
+            },
+            grafana: {
+              persistence: {
+                enabled: true,
+              },
+              adminPassword: config.grafana.password,
+              'grafana.ini': {
+                users: {
+                  viewers_can_edit: true,
+                },
+              },
+              ingress: {
+                enabled: true,
+                hosts: [config.grafana.host],
+                annotations: {
+                  'cert-manager.io/cluster-issuer': 'letsencrypt-prod-issuer',
+                },
+                tls: [
+                  {
+                    secretName: 'grafana-tls',
+                    hosts: [config.grafana.host],
+                  },
+                ],
+              },
+              dashboardProviders: {
+                'dashboardproviders.yaml': {
+                  apiVersion: 1,
+                  providers: [
+                    {
+                      name: 'karperter',
+                      orgId: 1,
+                      folder: 'karpenter',
+                      type: 'file',
+                      disableDeletion: true,
+                      editable: true,
+                      options: {
+                        path: '/var/lib/grafana/dashboards/karpenter',
+                      },
+                    },
+                  ],
+                },
+              },
+              dashboards: {
+                karpenter: {
+                  'karperter-capacity': {
+                    url: 'https://karpenter.sh/preview/getting-started/getting-started-with-karpenter/karpenter-capacity-dashboard.json',
+                  },
+                  'karperter-performance': {
+                    url: 'https://karpenter.sh/preview/getting-started/getting-started-with-karpenter/karpenter-performance-dashboard.json',
+                  },
+                },
+              },
+            },
+          }),
+        },
+      },
+      syncPolicy: {
+        automated: {
+          prune: true,
+          selfHeal: true,
+        },
+        syncOptions: ['ServerSideApply=true', 'PruneLast=true'],
+      },
+    },
+  },
+  { provider, dependsOn: [sdpProject] },
+)
+
+// === EKS === Monitoring === Loki ===
+
+const lokiBuckets = ['chunks', 'ruler', 'admin']
+const lokiBucketsEntries = lokiBuckets.map((lokiBucket) => {
+  const bucket = nmo(`loki-${lokiBucket}`)
+  new aws.s3.Bucket(bucket, {
+    bucket,
+    acl: 'private',
+    serverSideEncryptionConfiguration: {
+      rule: {
+        applyServerSideEncryptionByDefault: {
+          sseAlgorithm: 'AES256',
+        },
+      },
+    },
+  })
+  return [lokiBucket, bucket]
+})
+
+const lokiUser = new aws.iam.User(nm('loki-user'))
+const lokiAccessKey = new aws.iam.AccessKey(nm('loki-access-key'), {
+  user: lokiUser.name,
+})
+const lokiS3AccessPolicy = new aws.iam.Policy(nm('loki-policy'), {
+  policy: pulumi.all(lokiBucketsEntries).apply((buckets) =>
+    aws.iam
+      .getPolicyDocument({
+        statements: [
+          {
+            effect: 'Allow',
+            actions: ['s3:ListBucket'],
+            resources: buckets.map(([, bucket]) => `arn:aws:s3:::${bucket}`),
+          },
+          {
+            effect: 'Allow',
+            actions: ['s3:GetObject', 's3:PutObject', 's3:DeleteObject'],
+            resources: buckets.map(([, bucket]) => `arn:aws:s3:::${bucket}/*`),
+          },
+        ],
+      })
+      .then((doc) => doc.json),
+  ),
+})
+new aws.iam.UserPolicyAttachment(nm('loki-user-policy'), {
+  policyArn: lokiS3AccessPolicy.arn,
+  user: lokiUser,
+})
+
+new Application(
+  nm('loki'),
+  {
+    metadata: {
+      name: 'loki',
+      namespace: 'argocd',
+      finalizers: ['resources-finalizer.argocd.argoproj.io'],
+    },
+    spec: {
+      project: sdpProjectName,
+      destination: {
+        server: 'https://kubernetes.default.svc',
+        namespace: monitoringNamespace.metadata.name,
+      },
+      source: {
+        repoURL: 'https://grafana.github.io/helm-charts',
+        chart: 'loki',
+        targetRevision: '*',
+        helm: {
+          values: pulumi.jsonStringify({
+            deploymentMode: 'SimpleScalable',
+            loki: {
+              auth_enabled: false,
+              schemaConfig: {
+                configs: [
+                  {
+                    from: '2024-04-01',
+                    store: 'tsdb',
+                    object_store: 's3',
+                    schema: 'v13',
+                    index: {
+                      prefix: 'loki_index_',
+                      period: '24h',
+                    },
+                  },
+                ],
+              },
+              ingester: {
+                chunk_encoding: 'snappy',
+              },
+              storage: {
+                type: 's3',
+                s3: {
+                  endpoint: 's3.amazonaws.com',
+                  region: regionId,
+                  secretAccessKey: lokiAccessKey.secret,
+                  accessKeyId: lokiAccessKey.id,
+                  s3ForcePathStyle: false,
+                  insecure: false,
+                },
+                bucketNames: {
+                  ...Object.fromEntries(lokiBucketsEntries),
+                },
+              },
+            },
+          }),
+        },
+      },
+      syncPolicy: {
+        automated: {
+          prune: true,
+          selfHeal: true,
+        },
+        syncOptions: ['ServerSideApply=true', 'CreateNamespace=true', 'PruneLast=true'],
+      },
+    },
+  },
+  { provider, dependsOn: [sdpProject] },
+)
+
+// === EKS === Monitoring === Promtail ===
+
+new Application(
+  nm('promtail'),
+  {
+    metadata: {
+      name: 'promtail',
+      namespace: 'argocd',
+      finalizers: ['resources-finalizer.argocd.argoproj.io'],
+    },
+    spec: {
+      project: sdpProjectName,
+      destination: {
+        server: 'https://kubernetes.default.svc',
+        namespace: monitoringNamespace.metadata.name,
+      },
+      source: {
+        repoURL: 'https://grafana.github.io/helm-charts',
+        chart: 'promtail',
+        targetRevision: '*',
+        helm: {
+          values: pulumi.jsonStringify({
+            config: {
+              clients: [
+                {
+                  url: 'http://loki-gateway/loki/api/v1/push',
+                },
+              ],
+            },
+          }),
+        },
       },
       syncPolicy: {
         automated: {
@@ -1317,7 +1548,7 @@ new Application(
 
 // === EKS === External Secrets ===
 
-new Application(
+const eso = new Application(
   nm('external-secrets'),
   {
     metadata: {
@@ -1401,6 +1632,7 @@ new aws.eks.PodIdentityAssociation(nm('external-secrets-pod-identity'), {
   serviceAccount: 'external-secrets',
   roleArn: esoSARole.arn,
 })
+// TODO: wait for eso CRDs to be applied by ArgoCD
 new k8s.apiextensions.CustomResource(
   nm('aws-secrets-store'),
   {
@@ -1458,11 +1690,11 @@ new k8s.storage.v1.StorageClass(
   { provider },
 )
 
-export const eso = {
+export const esoConfig = {
   clusterSecretStore: {
     aws: 'aws-secrets-store',
   },
 }
 
 // TODO: export all
-export { kubeconfig, vpc, publicRouteTable, privateRouteTable, clusterSecurityGroupId, k8sServiceHosts }
+export { kubeconfig, vpc, publicRouteTable, privateRouteTable, clusterSecurityGroupId }

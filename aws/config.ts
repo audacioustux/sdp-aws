@@ -14,4 +14,10 @@ const git = {
   password: gitConfig.requireSecret('password'),
 }
 
-export { git, pulumi }
+const grafanaConfig = new Config('grafana')
+const grafana = {
+  password: grafanaConfig.requireSecret('password'),
+  host: grafanaConfig.require('host'),
+}
+
+export { git, pulumi, grafana }

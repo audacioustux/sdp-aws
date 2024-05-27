@@ -42,11 +42,17 @@ tasks:
   argocd:password:
     deps: [kubeconfig:update]
     cmd: kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
-  argocd:expose: 
+  argocd:ui: 
     deps: [kubeconfig:update]
     cmds: 
       - echo "ArgoCD password - $(task argocd:password)"
       - kubectl port-forward svc/argocd-server -n argocd 8080:443
+  grafana:ui:
+    deps: [kubeconfig:update]
+    cmd: kubectl port-forward svc/kube-prometheus-stack-grafana 8081:80 -n monitoring
+  hubble:ui: 
+    deps: [kubeconfig:update]
+    cmd: cilium hubble ui
   k9s: 
     deps: [kubeconfig:update]
     cmd: k9s -A --headless --crumbsless
