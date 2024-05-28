@@ -241,25 +241,36 @@ new k8s.helm.v3.Release(
     name: 'cilium',
     chart: 'cilium',
     namespace: 'kube-system',
-    version: '1.15.5',
+    version: '*',
     repositoryOpts: {
       repo: 'https://helm.cilium.io',
     },
     values: {
+      rollOutCiliumPods: true,
       kubeProxyReplacement: 'strict',
       k8sServiceHost: cluster.endpoint.apply((endpoint) => endpoint.replace('https://', '')),
       ingressController: {
         enabled: true,
         loadbalancerMode: 'shared',
         default: true,
+        service: {
+          annotations: {
+            'service.beta.kubernetes.io/aws-load-balancer-type': 'nlb',
+          },
+        },
       },
       hubble: {
         relay: {
+          rollOutPods: true,
           enabled: true,
         },
         ui: {
+          rollOutPods: true,
           enabled: true,
         },
+      },
+      operator: {
+        rollOutPods: true,
       },
       loadBalancer: {
         algorithm: 'maglev',
@@ -270,6 +281,7 @@ new k8s.helm.v3.Release(
         },
       },
       envoy: {
+        rollOutPods: true,
         enabled: true,
       },
       routingMode: 'native',
