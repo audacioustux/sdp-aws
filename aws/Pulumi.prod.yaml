@@ -5,6 +5,7 @@ config:
   git:path: sdp
   git:repo: https://github.com/audacioustux/zeroaws
   git:username: audacioustux
-  grafana:host: grafana.coderstrust.global
+  grafana:host:
+    secure: AAABAFCImWELiim1SyDjCJJiKPbs6+u38cDH1pZypGNFlbZNb0+5X84lOjRfT4FiYEzdCszLSPh/fg==
   grafana:password:
     secure: AAABAPtcdlF9OpVDe4tmiRhQduEKB/bWf3MTnse4wWI3MdsO3343wgxOUtvW6+Wm

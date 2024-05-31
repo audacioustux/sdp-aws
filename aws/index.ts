@@ -5,7 +5,6 @@ import * as k8s from '@pulumi/kubernetes'
 import { registerAutoTags } from './utils/autotag.ts'
 import * as config from './config.ts'
 import { assumeRoleForEKSPodIdentity } from './utils/policyStatement.ts'
-import { AppProject, Application } from './crds/argocd.ts'
 
 // Automatically inject tags.
 registerAutoTags({
@@ -172,7 +171,7 @@ const {
   provider,
 } = new eks.Cluster(eksClusterName, {
   name: eksClusterName,
-  version: '1.29',
+  version: '1.30',
   vpcId: vpc.id,
   createOidcProvider: true,
   publicSubnetIds: publicSubnets.map((s) => s.id),
@@ -199,9 +198,9 @@ const clusterSecurityGroupId = eksCluster.vpcConfig.clusterSecurityGroupId
 
 // === EKS === Node Group ===
 
-const highPriorityNodeGroupName = nm('high-priority')
-new eks.ManagedNodeGroup(highPriorityNodeGroupName, {
-  nodeGroupName: highPriorityNodeGroupName,
+const defaultNodeGroupName = nm('default')
+new eks.ManagedNodeGroup(defaultNodeGroupName, {
+  nodeGroupName: defaultNodeGroupName,
   cluster,
   instanceTypes: ['m7g.large', 't4g.large'],
   capacityType: 'SPOT',
@@ -215,24 +214,6 @@ new eks.ManagedNodeGroup(highPriorityNodeGroupName, {
   },
 })
 
-// NOTE: till Dec 31 '24, t4g.small is free
-// NOTE: daemonsets takes up most resources in t4g.small
-// const freeT4gNodeGroupName = nm('free-t4g')
-// new eks.ManagedNodeGroup(freeT4gNodeGroupName, {
-//   nodeGroupName: freeT4gNodeGroupName,
-//   cluster,
-//   instanceTypes: ['t4g.small'],
-//   capacityType: 'ON_DEMAND',
-//   // amiType: 'BOTTLEROCKET_ARM_64',
-//   amiType: 'AL2023_ARM_64_STANDARD',
-//   nodeRole: cluster.instanceRoles[0],
-//   scalingConfig: {
-//     minSize: 1,
-//     maxSize: 1,
-//     desiredSize: 1,
-//   },
-// })
-
 // === EKS === Cilium ===
 
 new k8s.helm.v3.Release(
@@ -241,7 +222,7 @@ new k8s.helm.v3.Release(
     name: 'cilium',
     chart: 'cilium',
     namespace: 'kube-system',
-    version: '*',
+    version: '1.15.5',
     repositoryOpts: {
       repo: 'https://helm.cilium.io',
     },
@@ -923,6 +904,7 @@ const karpenter = new k8s.helm.v3.Release(
     name: 'karpenter',
     chart: 'oci://public.ecr.aws/karpenter/karpenter',
     namespace: 'kube-system',
+    version: '0.36.0',
     values: {
       settings: {
         clusterName: eksCluster.name,
@@ -997,6 +979,12 @@ new k8s.apiextensions.CustomResource(
               operator: 'In',
               values: ['spot', 'on-demand'],
             },
+            // TODO: remove after ensuring all container has resource limits
+            {
+              key: 'karpenter.k8s.aws/instance-memory',
+              operator: 'Gt',
+              values: ['4000'],
+            },
           ],
           nodeClassRef: {
             apiVersion: 'karpenter.k8s.aws/v1beta1',
@@ -1023,7 +1011,7 @@ new k8s.apiextensions.CustomResource(
       },
       disruption: {
         consolidationPolicy: 'WhenUnderutilized',
-        expireAfter: `${24 * 7}h`,
+        expireAfter: `${24 * 30}h`,
       },
     },
   },
@@ -1053,39 +1041,6 @@ new k8s.helm.v3.Release(
       },
     },
     createNamespace: true,
-    timeout: 60 * 30,
-  },
-  { provider },
-)
-
-const sdpProjectName = 'sdp'
-// TODO: depend on sdpProject without explicitly declaring in `dependsOn` on Application resources
-const sdpProject = new AppProject(
-  nm(sdpProjectName),
-  {
-    apiVersion: 'argoproj.io/v1alpha1',
-    kind: 'AppProject',
-    metadata: {
-      namespace: 'argocd',
-      name: sdpProjectName,
-      finalizers: ['resources-finalizer.argocd.argoproj.io'],
-    },
-    spec: {
-      clusterResourceWhitelist: [
-        {
-          group: '*',
-          kind: '*',
-        },
-      ],
-      description: "Software Delivery Platform's project",
-      destinations: [
-        {
-          namespace: '*',
-          server: 'https://kubernetes.default.svc',
-        },
-      ],
-      sourceRepos: ['*'],
-    },
   },
   { provider },
 )
@@ -1125,96 +1080,57 @@ new aws.eks.PodIdentityAssociation(nm('external-dns-pod-identity'), {
   serviceAccount: 'external-dns',
   roleArn: externalDNSRole.arn,
 })
-new Application(
+new k8s.helm.v3.Release(
   nm('external-dns'),
   {
-    metadata: {
-      name: 'external-dns',
-      namespace: 'argocd',
-      finalizers: ['resources-finalizer.argocd.argoproj.io'],
+    name: 'external-dns',
+    chart: 'external-dns',
+    namespace: 'kube-system',
+    repositoryOpts: {
+      repo: 'https://charts.bitnami.com/bitnami',
     },
-    spec: {
-      project: sdpProjectName,
-      destination: {
-        server: 'https://kubernetes.default.svc',
-        namespace: 'kube-system',
-      },
-      source: {
-        repoURL: 'https://kubernetes-sigs.github.io/external-dns',
-        chart: 'external-dns',
-        targetRevision: '*',
-        helm: {
-          values: pulumi.jsonStringify({
-            serviceAccount: {
-              create: true,
-              name: 'external-dns',
-            },
-          }),
-        },
-      },
-      syncPolicy: {
-        automated: {
-          prune: true,
-          selfHeal: true,
-        },
-        syncOptions: ['ServerSideApply=true'],
+    values: {
+      serviceAccount: {
+        create: true,
+        name: 'external-dns',
       },
     },
   },
-  { provider, dependsOn: [sdpProject] },
+  { provider },
 )
 
 // === EKS === Cert Manager ===
 
-new Application(
+new k8s.helm.v3.Release(
   nm('cert-manager'),
   {
-    metadata: {
-      name: 'cert-manager',
-      namespace: 'argocd',
-      finalizers: ['resources-finalizer.argocd.argoproj.io'],
+    name: 'cert-manager',
+    chart: 'cert-manager',
+    namespace: 'cert-manager',
+    repositoryOpts: {
+      repo: 'https://charts.jetstack.io',
     },
-    spec: {
-      project: sdpProjectName,
-      destination: {
-        server: 'https://kubernetes.default.svc',
-        namespace: 'cert-manager',
-      },
-      source: {
-        repoURL: 'https://charts.jetstack.io',
-        chart: 'cert-manager',
-        targetRevision: '*',
-        helm: {
-          values: pulumi.jsonStringify({
-            installCRDs: true,
-            prometheus: {
-              enabled: true,
-              servicemonitor: {
-                enabled: true,
-              },
-            },
-            enableCertificateOwnerRef: true,
-            extraArgs: [
-              '--enable-certificate-owner-ref=true',
-              '--dns01-recursive-nameservers-only',
-              '--dns01-recursive-nameservers=8.8.8.8:53,1.1.1.1:53',
-            ],
-            securityContext: {
-              fsGroup: 1001,
-            },
-          }),
+    values: {
+      installCRDs: true,
+      prometheus: {
+        enabled: true,
+        servicemonitor: {
+          enabled: true,
         },
       },
-      syncPolicy: {
-        automated: {
-          prune: true,
-          selfHeal: true,
-        },
-        syncOptions: ['ServerSideApply=true', 'CreateNamespace=true'],
+      enableCertificateOwnerRef: true,
+      extraArgs: [
+        '--enable-certificate-owner-ref=true',
+        '--dns01-recursive-nameservers-only',
+        '--dns01-recursive-nameservers=8.8.8.8:53,1.1.1.1:53',
+      ],
+      securityContext: {
+        fsGroup: 1001,
       },
     },
+    createNamespace: true,
   },
-  { provider, dependsOn: [sdpProject] },
+  { provider },
 )
 
 const certManagerDns01Policy = new aws.iam.Policy(nm('cert-manager-dns01-policy'), {
@@ -1257,35 +1173,17 @@ new aws.eks.PodIdentityAssociation(nm('cert-manager-dns01-pod-identity'), {
 
 // === EKS === Metrics Server ===
 
-new Application(
+new k8s.helm.v3.Release(
   nm('metrics-server'),
   {
-    metadata: {
-      name: 'metrics-server',
-      namespace: 'argocd',
-      finalizers: ['resources-finalizer.argocd.argoproj.io'],
-    },
-    spec: {
-      project: sdpProjectName,
-      destination: {
-        server: 'https://kubernetes.default.svc',
-        namespace: 'kube-system',
-      },
-      source: {
-        repoURL: 'https://kubernetes-sigs.github.io/metrics-server/',
-        chart: 'metrics-server',
-        targetRevision: '*',
-      },
-      syncPolicy: {
-        automated: {
-          prune: true,
-          selfHeal: true,
-        },
-        syncOptions: ['ServerSideApply=true'],
-      },
+    name: 'metrics-server',
+    chart: 'metrics-server',
+    namespace: 'kube-system',
+    repositoryOpts: {
+      repo: 'https://charts.bitnami.com/bitnami',
     },
   },
-  { provider, dependsOn: [sdpProject] },
+  { provider },
 )
 
 // === EKS === Kube Prometheus Stack ===
@@ -1296,104 +1194,84 @@ const monitoringNamespace = new k8s.core.v1.Namespace(
   { provider },
 )
 
-new Application(
+new k8s.helm.v3.Release(
   nm('kube-prometheus-stack'),
   {
-    metadata: {
-      name: 'kube-prometheus-stack',
-      namespace: 'argocd',
-      finalizers: ['resources-finalizer.argocd.argoproj.io'],
+    name: 'kube-prometheus-stack',
+    chart: 'kube-prometheus-stack',
+    namespace: monitoringNamespace.metadata.name,
+    repositoryOpts: {
+      repo: 'https://prometheus-community.github.io/helm-charts',
     },
-    spec: {
-      project: sdpProjectName,
-      destination: {
-        server: 'https://kubernetes.default.svc',
-        namespace: monitoringNamespace.metadata.name,
-      },
-      source: {
-        repoURL: 'https://prometheus-community.github.io/helm-charts',
-        chart: 'kube-prometheus-stack',
-        targetRevision: '*',
-        helm: {
-          values: pulumi.jsonStringify({
-            prometheus: {
-              prometheusSpec: {
-                serviceMonitorSelectorNilUsesHelmValues: false,
-                podMonitorSelectorNilUsesHelmValues: false,
-              },
-            },
-            prometheusOperator: {
-              admissionWebhooks: {
-                certManager: {
-                  enabled: true,
-                },
-              },
-            },
-            grafana: {
-              persistence: {
-                enabled: true,
-              },
-              adminPassword: config.grafana.password,
-              'grafana.ini': {
-                users: {
-                  viewers_can_edit: true,
-                },
-              },
-              ingress: {
-                enabled: true,
-                hosts: [config.grafana.host],
-                annotations: {
-                  'cert-manager.io/cluster-issuer': 'letsencrypt-prod-issuer',
-                },
-                tls: [
-                  {
-                    secretName: 'grafana-tls',
-                    hosts: [config.grafana.host],
-                  },
-                ],
-              },
-              dashboardProviders: {
-                'dashboardproviders.yaml': {
-                  apiVersion: 1,
-                  providers: [
-                    {
-                      name: 'karperter',
-                      orgId: 1,
-                      folder: 'karpenter',
-                      type: 'file',
-                      disableDeletion: true,
-                      editable: true,
-                      options: {
-                        path: '/var/lib/grafana/dashboards/karpenter',
-                      },
-                    },
-                  ],
-                },
-              },
-              dashboards: {
-                karpenter: {
-                  'karperter-capacity': {
-                    url: 'https://karpenter.sh/preview/getting-started/getting-started-with-karpenter/karpenter-capacity-dashboard.json',
-                  },
-                  'karperter-performance': {
-                    url: 'https://karpenter.sh/preview/getting-started/getting-started-with-karpenter/karpenter-performance-dashboard.json',
-                  },
-                },
-              },
-            },
-          }),
+    values: {
+      prometheus: {
+        prometheusSpec: {
+          serviceMonitorSelectorNilUsesHelmValues: false,
+          podMonitorSelectorNilUsesHelmValues: false,
         },
       },
-      syncPolicy: {
-        automated: {
-          prune: true,
-          selfHeal: true,
+      prometheusOperator: {
+        admissionWebhooks: {
+          certManager: {
+            enabled: true,
+          },
         },
-        syncOptions: ['ServerSideApply=true', 'PruneLast=true'],
+      },
+      grafana: {
+        persistence: {
+          enabled: true,
+        },
+        adminPassword: config.grafana.password,
+        'grafana.ini': {
+          users: {
+            viewers_can_edit: true,
+          },
+        },
+        ingress: {
+          enabled: true,
+          hosts: [config.grafana.host],
+          annotations: {
+            'cert-manager.io/cluster-issuer': 'letsencrypt-prod-issuer',
+          },
+          tls: [
+            {
+              secretName: 'grafana-tls',
+              hosts: [config.grafana.host],
+            },
+          ],
+        },
+        dashboardProviders: {
+          'dashboardproviders.yaml': {
+            apiVersion: 1,
+            providers: [
+              {
+                name: 'karperter',
+                orgId: 1,
+                folder: 'karpenter',
+                type: 'file',
+                disableDeletion: true,
+                editable: true,
+                options: {
+                  path: '/var/lib/grafana/dashboards/karpenter',
+                },
+              },
+            ],
+          },
+        },
+        dashboards: {
+          karpenter: {
+            'karperter-capacity': {
+              url: 'https://karpenter.sh/preview/getting-started/getting-started-with-karpenter/karpenter-capacity-dashboard.json',
+            },
+            'karperter-performance': {
+              url: 'https://karpenter.sh/preview/getting-started/getting-started-with-karpenter/karpenter-performance-dashboard.json',
+            },
+          },
+        },
       },
     },
   },
-  { provider, dependsOn: [sdpProject] },
+  { provider },
 )
 
 // === EKS === Monitoring === Loki ===
@@ -1444,156 +1322,93 @@ new aws.iam.UserPolicyAttachment(nm('loki-user-policy'), {
   user: lokiUser,
 })
 
-new Application(
+new k8s.helm.v3.Release(
   nm('loki'),
   {
-    metadata: {
-      name: 'loki',
-      namespace: 'argocd',
-      finalizers: ['resources-finalizer.argocd.argoproj.io'],
+    name: 'loki',
+    chart: 'loki',
+    namespace: 'monitoring',
+    repositoryOpts: {
+      repo: 'https://grafana.github.io/helm-charts',
     },
-    spec: {
-      project: sdpProjectName,
-      destination: {
-        server: 'https://kubernetes.default.svc',
-        namespace: monitoringNamespace.metadata.name,
-      },
-      source: {
-        repoURL: 'https://grafana.github.io/helm-charts',
-        chart: 'loki',
-        targetRevision: '*',
-        helm: {
-          values: pulumi.jsonStringify({
-            deploymentMode: 'SimpleScalable',
-            loki: {
-              auth_enabled: false,
-              schemaConfig: {
-                configs: [
-                  {
-                    from: '2024-04-01',
-                    store: 'tsdb',
-                    object_store: 's3',
-                    schema: 'v13',
-                    index: {
-                      prefix: 'loki_index_',
-                      period: '24h',
-                    },
-                  },
-                ],
-              },
-              ingester: {
-                chunk_encoding: 'snappy',
-              },
-              storage: {
-                type: 's3',
-                s3: {
-                  endpoint: 's3.amazonaws.com',
-                  region: regionId,
-                  secretAccessKey: lokiAccessKey.secret,
-                  accessKeyId: lokiAccessKey.id,
-                  s3ForcePathStyle: false,
-                  insecure: false,
-                },
-                bucketNames: {
-                  ...Object.fromEntries(lokiBucketsEntries),
-                },
+    values: {
+      loki: {
+        auth_enabled: false,
+        schemaConfig: {
+          configs: [
+            {
+              from: '2024-04-01',
+              store: 'tsdb',
+              object_store: 's3',
+              schema: 'v13',
+              index: {
+                prefix: 'loki_index_',
+                period: '24h',
               },
             },
-          }),
+          ],
         },
-      },
-      syncPolicy: {
-        automated: {
-          prune: true,
-          selfHeal: true,
+        ingester: {
+          chunk_encoding: 'snappy',
         },
-        syncOptions: ['ServerSideApply=true', 'CreateNamespace=true', 'PruneLast=true'],
+        storage: {
+          type: 's3',
+          s3: {
+            endpoint: 's3.amazonaws.com',
+            region: regionId,
+            secretAccessKey: lokiAccessKey.secret,
+            accessKeyId: lokiAccessKey.id,
+            s3ForcePathStyle: false,
+            insecure: false,
+          },
+          bucketNames: Object.fromEntries(lokiBucketsEntries),
+        },
       },
     },
   },
-  { provider, dependsOn: [sdpProject] },
+  { provider },
 )
 
 // === EKS === Monitoring === Promtail ===
 
-new Application(
+new k8s.helm.v3.Release(
   nm('promtail'),
   {
-    metadata: {
-      name: 'promtail',
-      namespace: 'argocd',
-      finalizers: ['resources-finalizer.argocd.argoproj.io'],
+    name: 'promtail',
+    chart: 'promtail',
+    namespace: monitoringNamespace.metadata.name,
+    repositoryOpts: {
+      repo: 'https://grafana.github.io/helm-charts',
     },
-    spec: {
-      project: sdpProjectName,
-      destination: {
-        server: 'https://kubernetes.default.svc',
-        namespace: monitoringNamespace.metadata.name,
-      },
-      source: {
-        repoURL: 'https://grafana.github.io/helm-charts',
-        chart: 'promtail',
-        targetRevision: '*',
-        helm: {
-          values: pulumi.jsonStringify({
-            config: {
-              clients: [
-                {
-                  url: 'http://loki-gateway/loki/api/v1/push',
-                },
-              ],
-            },
-          }),
-        },
-      },
-      syncPolicy: {
-        automated: {
-          prune: true,
-          selfHeal: true,
-        },
-        syncOptions: ['ServerSideApply=true', 'CreateNamespace=true', 'PruneLast=true'],
+    values: {
+      config: {
+        clients: [
+          {
+            url: 'http://loki-gateway/loki/api/v1/push',
+          },
+        ],
       },
     },
   },
-  { provider, dependsOn: [sdpProject] },
+  { provider },
 )
 
 // === EKS === External Secrets ===
 
-const eso = new Application(
+const eso = new k8s.helm.v3.Release(
   nm('external-secrets'),
   {
-    metadata: {
-      name: 'external-secrets',
-      namespace: 'argocd',
-      finalizers: ['resources-finalizer.argocd.argoproj.io'],
+    name: 'external-secrets',
+    chart: 'external-secrets',
+    namespace: 'kube-system',
+    repositoryOpts: {
+      repo: 'https://charts.external-secrets.io',
     },
-    spec: {
-      project: sdpProjectName,
-      destination: {
-        server: 'https://kubernetes.default.svc',
-        namespace: 'kube-system',
-      },
-      source: {
-        repoURL: 'https://charts.external-secrets.io',
-        chart: 'external-secrets',
-        targetRevision: '*',
-        helm: {
-          values: pulumi.jsonStringify({
-            installCRDs: true,
-          }),
-        },
-      },
-      syncPolicy: {
-        automated: {
-          prune: true,
-          selfHeal: true,
-        },
-        syncOptions: ['ServerSideApply=true'],
-      },
+    values: {
+      installCRDs: true,
     },
   },
-  { provider, dependsOn: [sdpProject] },
+  { provider },
 )
 
 const esoSARole = new aws.iam.Role(nm('external-secrets-role'), {
@@ -1644,7 +1459,7 @@ new aws.eks.PodIdentityAssociation(nm('external-secrets-pod-identity'), {
   serviceAccount: 'external-secrets',
   roleArn: esoSARole.arn,
 })
-// TODO: wait for eso CRDs to be applied by ArgoCD
+
 new k8s.apiextensions.CustomResource(
   nm('aws-secrets-store'),
   {
@@ -1652,7 +1467,7 @@ new k8s.apiextensions.CustomResource(
     kind: 'ClusterSecretStore',
     metadata: {
       name: 'aws-secrets-store',
-      namespace: 'kube-system',
+      namespace: eso.namespace,
     },
     spec: {
       provider: {
@@ -1701,6 +1516,8 @@ new k8s.storage.v1.StorageClass(
   },
   { provider },
 )
+
+// exports
 
 export const esoConfig = {
   clusterSecretStore: {
