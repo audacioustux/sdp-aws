@@ -1025,6 +1025,7 @@ new k8s.helm.v3.Release(
   {
     name: 'argocd',
     chart: 'argo-cd',
+    version: '7.1.0',
     namespace: 'argocd',
     repositoryOpts: {
       repo: 'https://argoproj.github.io/argo-helm',
@@ -1086,6 +1087,7 @@ new k8s.helm.v3.Release(
     name: 'external-dns',
     chart: 'external-dns',
     namespace: 'kube-system',
+    version: '7.5.2',
     repositoryOpts: {
       repo: 'https://charts.bitnami.com/bitnami',
     },
@@ -1107,6 +1109,7 @@ new k8s.helm.v3.Release(
     name: 'cert-manager',
     chart: 'cert-manager',
     namespace: 'cert-manager',
+    version: 'v1.14.5',
     repositoryOpts: {
       repo: 'https://charts.jetstack.io',
     },
@@ -1179,6 +1182,7 @@ new k8s.helm.v3.Release(
     name: 'metrics-server',
     chart: 'metrics-server',
     namespace: 'kube-system',
+    version: '7.2.0',
     repositoryOpts: {
       repo: 'https://charts.bitnami.com/bitnami',
     },
@@ -1199,6 +1203,7 @@ new k8s.helm.v3.Release(
   {
     name: 'kube-prometheus-stack',
     chart: 'kube-prometheus-stack',
+    version: '59.0.0',
     namespace: monitoringNamespace.metadata.name,
     repositoryOpts: {
       repo: 'https://prometheus-community.github.io/helm-charts',
@@ -1327,6 +1332,7 @@ new k8s.helm.v3.Release(
   {
     name: 'loki',
     chart: 'loki',
+    version: '6.6.2',
     namespace: 'monitoring',
     repositoryOpts: {
       repo: 'https://grafana.github.io/helm-charts',
@@ -1376,6 +1382,7 @@ new k8s.helm.v3.Release(
   {
     name: 'promtail',
     chart: 'promtail',
+    version: '6.15.5',
     namespace: monitoringNamespace.metadata.name,
     repositoryOpts: {
       repo: 'https://grafana.github.io/helm-charts',
@@ -1400,6 +1407,7 @@ const eso = new k8s.helm.v3.Release(
   {
     name: 'external-secrets',
     chart: 'external-secrets',
+    version: '0.9.1',
     namespace: 'kube-system',
     repositoryOpts: {
       repo: 'https://charts.external-secrets.io',
