@@ -12,4 +12,5 @@ tasks:
     deps: [deps]
     env:
       PULUMI_K8S_ENABLE_SERVER_SIDE_APPLY: true
+      PULUMI_K8S_CLIENT_TIMEOUT: 90
     cmd: pulumi up -s prod {{.CLI_ARGS}}

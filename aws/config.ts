@@ -20,4 +20,18 @@ const grafana = {
   host: grafanaConfig.requireSecret('host'),
 }
 
-export { git, pulumi, grafana }
+const defaults = {
+  pod: {
+    resources: {
+      requests: {
+        cpu: '0.05',
+        memory: '64Mi',
+      },
+      limits: {
+        memory: '256Mi',
+      },
+    },
+  },
+}
+
+export { git, pulumi, grafana, defaults }

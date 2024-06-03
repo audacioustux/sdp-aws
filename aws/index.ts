@@ -5,6 +5,7 @@ import * as k8s from '@pulumi/kubernetes'
 import { registerAutoTags } from './utils/autotag.ts'
 import * as config from './config.ts'
 import { assumeRoleForEKSPodIdentity } from './utils/policyStatement.ts'
+import { request } from 'http'
 
 // Automatically inject tags.
 registerAutoTags({
@@ -180,17 +181,9 @@ const {
   encryptionConfigKeyArn: kmsKey.arn,
   defaultAddonsToRemove: ['kube-proxy', 'vpc-cni', 'coredns'],
   useDefaultVpcCni: true,
-  skipDefaultNodeGroup: true,
   // TODO: disable public access to the cluster (use vpc client endpoint instead)
   // endpointPublicAccess: false,
-  nodeGroupOptions: {
-    taints: {
-      'node.cilium.io/agent-not-ready': {
-        value: 'true',
-        effect: 'NoExecute',
-      },
-    },
-  },
+  skipDefaultNodeGroup: true,
   instanceRole: eksInstanceRole,
 })
 
@@ -200,18 +193,20 @@ const clusterSecurityGroupId = eksCluster.vpcConfig.clusterSecurityGroupId
 
 const defaultNodeGroupName = nm('default')
 new eks.ManagedNodeGroup(defaultNodeGroupName, {
-  nodeGroupName: defaultNodeGroupName,
   cluster,
-  instanceTypes: ['m7g.large', 't4g.large'],
+  nodeGroupName: defaultNodeGroupName,
+  instanceTypes: ['m7g.large', 'm7gd.large', 't4g.large'],
   capacityType: 'SPOT',
   // amiType: 'BOTTLEROCKET_ARM_64',
   amiType: 'AL2023_ARM_64_STANDARD',
   nodeRole: cluster.instanceRoles[0],
-  scalingConfig: {
-    minSize: 2,
-    maxSize: 2,
-    desiredSize: 2,
-  },
+  taints: [
+    {
+      key: 'node.cilium.io/agent-not-ready',
+      value: 'true',
+      effect: 'NO_EXECUTE',
+    },
+  ],
 })
 
 // === EKS === Cilium ===
@@ -230,6 +225,15 @@ new k8s.helm.v3.Release(
       rollOutCiliumPods: true,
       kubeProxyReplacement: 'strict',
       k8sServiceHost: cluster.endpoint.apply((endpoint) => endpoint.replace('https://', '')),
+      resources: {
+        requests: {
+          cpu: '0.2',
+          memory: '256Mi',
+        },
+        limits: {
+          memory: '512Mi',
+        },
+      },
       ingressController: {
         enabled: true,
         loadbalancerMode: 'shared',
@@ -244,14 +248,19 @@ new k8s.helm.v3.Release(
         relay: {
           rollOutPods: true,
           enabled: true,
+          resources: config.defaults.pod.resources,
         },
         ui: {
           rollOutPods: true,
           enabled: true,
+          frontend: {
+            resources: config.defaults.pod.resources,
+          },
         },
       },
       operator: {
         rollOutPods: true,
+        resources: config.defaults.pod.resources,
       },
       loadBalancer: {
         algorithm: 'maglev',
@@ -264,6 +273,7 @@ new k8s.helm.v3.Release(
       envoy: {
         rollOutPods: true,
         enabled: true,
+        resources: config.defaults.pod.resources,
       },
       routingMode: 'native',
       bpf: {
@@ -284,6 +294,9 @@ new k8s.helm.v3.Release(
   { provider },
 )
 
+// TODO: Move Addons to Helm Releases
+// NOTE: EKS Addons are not as flexible/configurable as Helm Charts. e.g. https://github.com/kubernetes-sigs/aws-efs-csi-driver/issues/1181
+
 // === EKS === Addons === CoreDNS ===
 
 new aws.eks.Addon(nm('coredns'), {
@@ -296,6 +309,10 @@ new aws.eks.Addon(nm('coredns'), {
       mostRecent: true,
     }),
   ).version,
+  resolveConflictsOnUpdate: 'OVERWRITE',
+  configurationValues: JSON.stringify({
+    resources: config.defaults.pod.resources,
+  }),
 })
 
 // === EKS === Addons === Pod Identity Agent ===
@@ -311,6 +328,10 @@ new aws.eks.Addon(nm('pod-identity-agent'), {
         mostRecent: true,
       }),
   ).version,
+  resolveConflictsOnUpdate: 'OVERWRITE',
+  configurationValues: JSON.stringify({
+    resources: config.defaults.pod.resources,
+  }),
 })
 
 // === EKS === Addons === EBS CSI Driver ===
@@ -418,6 +439,8 @@ new aws.eks.Addon(nm('efs-csi-driver'), {
       }),
   ).version,
   serviceAccountRoleArn: efsCsiDriverRole.arn,
+  resolveConflictsOnUpdate: 'OVERWRITE',
+  // TODO: add resource requirements
 })
 
 // === EKS === Addons === S3 Mountpoint Driver ===
@@ -471,21 +494,7 @@ new aws.eks.Addon(nm('s3-mountpoint-driver'), {
       }),
   ).version,
   serviceAccountRoleArn: s3MountpointDriverRole.arn,
-})
-
-// === EKS === Addons === CSI Snapshot Controller ===
-
-new aws.eks.Addon(nm('csi-snapshot-controller'), {
-  addonName: 'snapshot-controller',
-  clusterName: eksCluster.name,
-  addonVersion: eksCluster.version.apply(
-    async (kubernetesVersion) =>
-      await aws.eks.getAddonVersion({
-        addonName: 'snapshot-controller',
-        kubernetesVersion,
-        mostRecent: true,
-      }),
-  ).version,
+  resolveConflictsOnUpdate: 'OVERWRITE',
 })
 
 // === EC2 === Interruption Queue ===
@@ -898,13 +907,24 @@ new aws.eks.PodIdentityAssociation(nm('karpenter-controller-pod-identity'), {
 
 // === EKS === Karpenter ===
 
+const karpenterCRD = new k8s.helm.v3.Release(
+  nm('karpenter-crd'),
+  {
+    name: 'karpenter-crd',
+    chart: 'oci://public.ecr.aws/karpenter/karpenter-crd',
+    namespace: 'kube-system',
+    version: '0.37.0',
+  },
+  { provider },
+)
+
 const karpenter = new k8s.helm.v3.Release(
   nm('karpenter'),
   {
     name: 'karpenter',
     chart: 'oci://public.ecr.aws/karpenter/karpenter',
-    namespace: 'kube-system',
-    version: '0.36.0',
+    namespace: karpenterCRD.namespace,
+    version: karpenterCRD.version,
     values: {
       settings: {
         clusterName: eksCluster.name,
@@ -915,6 +935,16 @@ const karpenter = new k8s.helm.v3.Release(
       },
       serviceMonitor: {
         enabled: true,
+      },
+      controller: {
+        resources: {
+          requests: {
+            memory: '256Mi',
+          },
+          limits: {
+            memory: '512Mi',
+          },
+        },
       },
     },
     timeout: 60 * 30,
@@ -937,9 +967,7 @@ const defaultNodeClass = new k8s.apiextensions.CustomResource(
       amiFamily: 'AL2023',
       role: eksInstanceRole.name,
       associatePublicIPAddress: false,
-      subnetSelectorTerms: privateSubnets.map((subnet) => ({
-        id: subnet.id,
-      })),
+      subnetSelectorTerms: privateSubnets.map(({ id }) => ({ id })),
       securityGroupSelectorTerms: [
         {
           id: clusterSecurityGroupId,
@@ -978,12 +1006,6 @@ new k8s.apiextensions.CustomResource(
               key: 'karpenter.sh/capacity-type',
               operator: 'In',
               values: ['spot', 'on-demand'],
-            },
-            // TODO: remove after ensuring all container has resource limits
-            {
-              key: 'karpenter.k8s.aws/instance-memory',
-              operator: 'Gt',
-              values: ['4000'],
             },
           ],
           nodeClassRef: {
@@ -1040,6 +1062,17 @@ new k8s.helm.v3.Release(
           },
         },
       },
+      controller: {
+        resources: {
+          requests: {
+            cpu: '200m',
+            memory: '500Mi',
+          },
+          limits: {
+            memory: '1Gi',
+          },
+        },
+      },
     },
     createNamespace: true,
   },
@@ -1077,7 +1110,7 @@ new aws.iam.RolePolicyAttachment(externalDNSRoleName, {
 })
 new aws.eks.PodIdentityAssociation(nm('external-dns-pod-identity'), {
   clusterName: eksCluster.name,
-  namespace: 'kube-system',
+  namespace: 'external-dns',
   serviceAccount: 'external-dns',
   roleArn: externalDNSRole.arn,
 })
@@ -1086,10 +1119,10 @@ new k8s.helm.v3.Release(
   {
     name: 'external-dns',
     chart: 'external-dns',
-    namespace: 'kube-system',
-    version: '7.5.2',
+    namespace: 'external-dns',
+    version: '1.14.4',
     repositoryOpts: {
-      repo: 'https://charts.bitnami.com/bitnami',
+      repo: 'https://kubernetes-sigs.github.io/external-dns/',
     },
     values: {
       serviceAccount: {
@@ -1097,6 +1130,7 @@ new k8s.helm.v3.Release(
         name: 'external-dns',
       },
     },
+    createNamespace: true,
   },
   { provider },
 )
@@ -1174,23 +1208,7 @@ new aws.eks.PodIdentityAssociation(nm('cert-manager-dns01-pod-identity'), {
   roleArn: certManagerDns01Role.arn,
 })
 
-// === EKS === Metrics Server ===
-
-new k8s.helm.v3.Release(
-  nm('metrics-server'),
-  {
-    name: 'metrics-server',
-    chart: 'metrics-server',
-    namespace: 'kube-system',
-    version: '7.2.0',
-    repositoryOpts: {
-      repo: 'https://charts.bitnami.com/bitnami',
-    },
-  },
-  { provider },
-)
-
-// === EKS === Kube Prometheus Stack ===
+// === EKS === Monitoring ===
 
 const monitoringNamespace = new k8s.core.v1.Namespace(
   nm('monitoring'),
@@ -1198,12 +1216,30 @@ const monitoringNamespace = new k8s.core.v1.Namespace(
   { provider },
 )
 
+// === EKS === Monitoring === Metrics Server ===
+
+new k8s.helm.v3.Release(
+  nm('metrics-server'),
+  {
+    name: 'metrics-server',
+    chart: 'metrics-server',
+    namespace: monitoringNamespace.metadata.name,
+    version: '3.12.1',
+    repositoryOpts: {
+      repo: 'https://kubernetes-sigs.github.io/metrics-server/',
+    },
+  },
+  { provider },
+)
+
+// === EKS === Monitoring === Kube Prometheus Stack ===
+
 new k8s.helm.v3.Release(
   nm('kube-prometheus-stack'),
   {
     name: 'kube-prometheus-stack',
     chart: 'kube-prometheus-stack',
-    version: '59.0.0',
+    version: '59.1.0',
     namespace: monitoringNamespace.metadata.name,
     repositoryOpts: {
       repo: 'https://prometheus-community.github.io/helm-charts',
@@ -1213,6 +1249,14 @@ new k8s.helm.v3.Release(
         prometheusSpec: {
           serviceMonitorSelectorNilUsesHelmValues: false,
           podMonitorSelectorNilUsesHelmValues: false,
+          resources: {
+            requests: {
+              memory: '1Gi',
+            },
+            limits: {
+              memory: '2Gi',
+            },
+          },
         },
       },
       prometheusOperator: {
@@ -1338,6 +1382,24 @@ new k8s.helm.v3.Release(
       repo: 'https://grafana.github.io/helm-charts',
     },
     values: {
+      chunksCache: {
+        allocatedMemory: '1024',
+        writebackSizeLimit: '64MB',
+      },
+      resultsCache: {
+        allocatedMemory: '128',
+        writebackSizeLimit: '64MB',
+      },
+      write: {
+        resources: {
+          requests: {
+            memory: '256Mi',
+          },
+          limits: {
+            memory: '512Mi',
+          },
+        },
+      },
       loki: {
         auth_enabled: false,
         schemaConfig: {
@@ -1407,14 +1469,15 @@ const eso = new k8s.helm.v3.Release(
   {
     name: 'external-secrets',
     chart: 'external-secrets',
-    version: '0.9.1',
-    namespace: 'kube-system',
+    version: '0.9.18',
+    namespace: 'external-secrets',
     repositoryOpts: {
       repo: 'https://charts.external-secrets.io',
     },
     values: {
       installCRDs: true,
     },
+    createNamespace: true,
   },
   { provider },
 )
@@ -1475,7 +1538,6 @@ new k8s.apiextensions.CustomResource(
     kind: 'ClusterSecretStore',
     metadata: {
       name: 'aws-secrets-store',
-      namespace: eso.namespace,
     },
     spec: {
       provider: {
@@ -1487,7 +1549,7 @@ new k8s.apiextensions.CustomResource(
       },
     },
   },
-  { provider },
+  { provider, dependsOn: [eso] },
 )
 
 // === EKS === EFS ===
@@ -1525,7 +1587,113 @@ new k8s.storage.v1.StorageClass(
   { provider },
 )
 
-// exports
+// === EKS === Kyverno ===
+
+const kyverno = new k8s.helm.v3.Release(
+  nm('kyverno'),
+  {
+    name: 'kyverno',
+    chart: 'kyverno',
+    version: '3.2.4',
+    namespace: 'kyverno',
+    repositoryOpts: {
+      repo: 'https://kyverno.github.io/kyverno/',
+    },
+    createNamespace: true,
+  },
+  { provider },
+)
+
+// new k8s.helm.v3.Release(
+//   nm('kyverno-policies'),
+//   {
+//     name: 'kyverno-policies',
+//     chart: 'kyverno-policies',
+//     version: '3.2.3 ',
+//     namespace: kyverno.namespace,
+//     repositoryOpts: {
+//       repo: 'https://kyverno.github.io/kyverno/',
+//     },
+//   },
+//   { provider },
+// )
+
+// === EKS === Kyverno === Policies ===
+
+new k8s.apiextensions.CustomResource(
+  nm('add-default-resources'),
+  {
+    apiVersion: 'kyverno.io/v1',
+    kind: 'ClusterPolicy',
+    metadata: {
+      name: 'add-default-resources',
+      annotations: {
+        'policies.kyverno.io/title': 'Add Default Resources',
+        'policies.kyverno.io/category': 'Other',
+        'policies.kyverno.io/severity': 'medium',
+        'kyverno.io/kyverno-version': kyverno.version,
+        'kyverno.io/kubernetes-version': eksCluster.version,
+        'policies.kyverno.io/subject': 'Pod',
+        'policies.kyverno.io/description': `Pods which don't specify at least resource requests are assigned a QoS class of BestEffort which can hog resources for other Pods on Nodes. At a minimum, all Pods should specify resource requests in order to be labeled as the QoS class Burstable. This sample mutates any container in a Pod which doesn't specify memory or cpu requests to apply some sane defaults.`,
+      },
+    },
+    spec: {
+      background: false,
+      rules: [
+        {
+          name: 'add-default-requests-limits',
+          match: {
+            any: [
+              {
+                resources: {
+                  kinds: ['Pod'],
+                },
+              },
+            ],
+          },
+          preconditions: {
+            any: [
+              {
+                key: '{{request.operation || "BACKGROUND"}}',
+                operator: 'AnyIn',
+                value: ['CREATE', 'UPDATE'],
+              },
+            ],
+          },
+          mutate: {
+            foreach: [
+              {
+                list: 'request.object.spec.[ephemeralContainers, initContainers, containers][]',
+                patchStrategicMerge: {
+                  spec: {
+                    containers: [
+                      {
+                        '(name)': '{{element.name}}',
+                        resources: {
+                          requests: {
+                            '+(memory)': config.defaults.pod.resources.requests.memory,
+                            '+(cpu)': config.defaults.pod.resources.requests.cpu,
+                          },
+                          limits: {
+                            '+(memory)': config.defaults.pod.resources.limits.memory,
+                            // NOTE: https://home.robusta.dev/blog/stop-using-cpu-limits
+                          },
+                        },
+                      },
+                    ],
+                  },
+                },
+              },
+            ],
+          },
+        },
+      ],
+    },
+  },
+  { provider, dependsOn: [kyverno] },
+)
+
+// === Exports ===
 
 export const esoConfig = {
   clusterSecretStore: {
