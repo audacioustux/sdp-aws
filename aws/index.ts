@@ -5,7 +5,6 @@ import * as k8s from '@pulumi/kubernetes'
 import { registerAutoTags } from './utils/autotag.ts'
 import * as config from './config.ts'
 import { assumeRoleForEKSPodIdentity } from './utils/policyStatement.ts'
-import { request } from 'http'
 
 // Automatically inject tags.
 registerAutoTags({
@@ -195,7 +194,10 @@ const defaultNodeGroupName = nm('default')
 new eks.ManagedNodeGroup(defaultNodeGroupName, {
   cluster,
   nodeGroupName: defaultNodeGroupName,
-  instanceTypes: ['m7g.large', 'm7gd.large', 't4g.large'],
+  // TODO: increase pod density with kubelet extraArgs
+  // NOTE: https://github.com/pulumi/pulumi-eks/issues/1179
+  // instanceTypes: ['m7g.medium', 'm7gd.medium', 't4g.medium', 'r7g.medium'],
+  instanceTypes: ['t4g.medium'], // t4g has the most pod limit by default
   capacityType: 'SPOT',
   // amiType: 'BOTTLEROCKET_ARM_64',
   amiType: 'AL2023_ARM_64_STANDARD',
@@ -208,6 +210,8 @@ new eks.ManagedNodeGroup(defaultNodeGroupName, {
     },
   ],
 })
+
+// TODO: Move all Helm Releases to ArgoCD
 
 // === EKS === Cilium ===
 
@@ -253,6 +257,9 @@ new k8s.helm.v3.Release(
         ui: {
           rollOutPods: true,
           enabled: true,
+          backend: {
+            resources: config.defaults.pod.resources,
+          },
           frontend: {
             resources: config.defaults.pod.resources,
           },
@@ -1029,7 +1036,7 @@ new k8s.apiextensions.CustomResource(
       },
       limits: {
         cpu: '16',
-        memory: '48Gi',
+        memory: '64Gi',
       },
       disruption: {
         consolidationPolicy: 'WhenUnderutilized',
@@ -1047,7 +1054,7 @@ new k8s.helm.v3.Release(
   {
     name: 'argocd',
     chart: 'argo-cd',
-    version: '7.1.0',
+    version: '7.1.1',
     namespace: 'argocd',
     repositoryOpts: {
       repo: 'https://argoproj.github.io/argo-helm',
@@ -1065,8 +1072,8 @@ new k8s.helm.v3.Release(
       controller: {
         resources: {
           requests: {
-            cpu: '200m',
-            memory: '500Mi',
+            cpu: '0.2',
+            memory: '512Mi',
           },
           limits: {
             memory: '1Gi',
@@ -1227,6 +1234,16 @@ new k8s.helm.v3.Release(
     version: '3.12.1',
     repositoryOpts: {
       repo: 'https://kubernetes-sigs.github.io/metrics-server/',
+    },
+    values: {
+      resources: {
+        requests: {
+          memory: '128Mi',
+        },
+        limits: {
+          memory: '256Mi',
+        },
+      },
     },
   },
   { provider },
@@ -1391,6 +1408,16 @@ new k8s.helm.v3.Release(
         writebackSizeLimit: '64MB',
       },
       write: {
+        resources: {
+          requests: {
+            memory: '256Mi',
+          },
+          limits: {
+            memory: '512Mi',
+          },
+        },
+      },
+      read: {
         resources: {
           requests: {
             memory: '256Mi',
@@ -1604,19 +1631,19 @@ const kyverno = new k8s.helm.v3.Release(
   { provider },
 )
 
-// new k8s.helm.v3.Release(
-//   nm('kyverno-policies'),
-//   {
-//     name: 'kyverno-policies',
-//     chart: 'kyverno-policies',
-//     version: '3.2.3 ',
-//     namespace: kyverno.namespace,
-//     repositoryOpts: {
-//       repo: 'https://kyverno.github.io/kyverno/',
-//     },
-//   },
-//   { provider },
-// )
+new k8s.helm.v3.Release(
+  nm('kyverno-policies'),
+  {
+    name: 'kyverno-policies',
+    chart: 'kyverno-policies',
+    version: '3.2.3 ',
+    namespace: kyverno.namespace,
+    repositoryOpts: {
+      repo: 'https://kyverno.github.io/kyverno/',
+    },
+  },
+  { provider },
+)
 
 // === EKS === Kyverno === Policies ===
 
@@ -1626,65 +1653,44 @@ new k8s.apiextensions.CustomResource(
     apiVersion: 'kyverno.io/v1',
     kind: 'ClusterPolicy',
     metadata: {
-      name: 'add-default-resources',
+      name: 'add-default-pod-limit-range',
       annotations: {
-        'policies.kyverno.io/title': 'Add Default Resources',
+        'policies.kyverno.io/title': 'Add Default Pod Limit Range',
         'policies.kyverno.io/category': 'Other',
         'policies.kyverno.io/severity': 'medium',
         'kyverno.io/kyverno-version': kyverno.version,
         'kyverno.io/kubernetes-version': eksCluster.version,
-        'policies.kyverno.io/subject': 'Pod',
-        'policies.kyverno.io/description': `Pods which don't specify at least resource requests are assigned a QoS class of BestEffort which can hog resources for other Pods on Nodes. At a minimum, all Pods should specify resource requests in order to be labeled as the QoS class Burstable. This sample mutates any container in a Pod which doesn't specify memory or cpu requests to apply some sane defaults.`,
+        'policies.kyverno.io/subject': 'LimitRange',
+        'policies.kyverno.io/description': `Pods which don't specify at least resource requests are assigned a QoS class of BestEffort which can hog resources for other Pods on Nodes. At a minimum, all Pods should specify resource requests in order to be labeled as the QoS class Burstable. This policy adds default resource requests and limits to Pods that don't specify them.`,
       },
     },
     spec: {
-      background: false,
+      generateExisting: true,
       rules: [
         {
-          name: 'add-default-requests-limits',
+          name: 'generate-pod-limit-range',
           match: {
-            any: [
-              {
-                resources: {
-                  kinds: ['Pod'],
-                },
-              },
-            ],
+            resources: {
+              kinds: ['Namespace'],
+            },
           },
-          preconditions: {
-            any: [
-              {
-                key: '{{request.operation || "BACKGROUND"}}',
-                operator: 'AnyIn',
-                value: ['CREATE', 'UPDATE'],
-              },
-            ],
-          },
-          mutate: {
-            foreach: [
-              {
-                list: 'request.object.spec.[ephemeralContainers, initContainers, containers][]',
-                patchStrategicMerge: {
-                  spec: {
-                    containers: [
-                      {
-                        '(name)': '{{element.name}}',
-                        resources: {
-                          requests: {
-                            '+(memory)': config.defaults.pod.resources.requests.memory,
-                            '+(cpu)': config.defaults.pod.resources.requests.cpu,
-                          },
-                          limits: {
-                            '+(memory)': config.defaults.pod.resources.limits.memory,
-                            // NOTE: https://home.robusta.dev/blog/stop-using-cpu-limits
-                          },
-                        },
-                      },
-                    ],
+          generate: {
+            apiVersion: 'v1',
+            kind: 'LimitRange',
+            name: 'default-pod-limit-range',
+            namespace: '{{request.object.metadata.name}}',
+            synchronize: true,
+            data: {
+              spec: {
+                limits: [
+                  {
+                    default: config.defaults.pod.resources.limits,
+                    defaultRequest: config.defaults.pod.resources.requests,
+                    type: 'Container',
                   },
-                },
+                ],
               },
-            ],
+            },
           },
         },
       ],

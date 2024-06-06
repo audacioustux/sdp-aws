@@ -28,7 +28,7 @@ const defaults = {
         memory: '64Mi',
       },
       limits: {
-        memory: '256Mi',
+        memory: '128Mi',
       },
     },
   },
