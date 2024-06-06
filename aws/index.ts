@@ -1631,19 +1631,20 @@ const kyverno = new k8s.helm.v3.Release(
   { provider },
 )
 
-new k8s.helm.v3.Release(
-  nm('kyverno-policies'),
-  {
-    name: 'kyverno-policies',
-    chart: 'kyverno-policies',
-    version: '3.2.3 ',
-    namespace: kyverno.namespace,
-    repositoryOpts: {
-      repo: 'https://kyverno.github.io/kyverno/',
-    },
-  },
-  { provider },
-)
+// TODO: Enable kyverno policies
+// new k8s.helm.v3.Release(
+//   nm('kyverno-policies'),
+//   {
+//     name: 'kyverno-policies',
+//     chart: 'kyverno-policies',
+//     version: '3.2.3 ',
+//     namespace: kyverno.namespace,
+//     repositoryOpts: {
+//       repo: 'https://kyverno.github.io/kyverno/',
+//     },
+//   },
+//   { provider },
+// )
 
 // === EKS === Kyverno === Policies ===
 
