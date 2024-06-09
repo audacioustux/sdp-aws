@@ -30,6 +30,7 @@ const vpc = new aws.ec2.Vpc(vpcName, {
 
 // === VPC === Subnets ===
 
+// take the first two availability zones
 const availabilityZones = await aws.getAvailabilityZones({
   state: 'available',
 })
@@ -211,8 +212,6 @@ new eks.ManagedNodeGroup(defaultNodeGroupName, {
   ],
 })
 
-// TODO: Move all Helm Releases to ArgoCD
-
 // === EKS === Cilium ===
 
 new k8s.helm.v3.Release(
@@ -285,9 +284,6 @@ new k8s.helm.v3.Release(
       routingMode: 'native',
       bpf: {
         masquerade: true,
-        // NOTE: https://github.com/cilium/cilium/issues/20942
-        // https://github.com/cilium/cilium/issues/20677
-        // hostLegacyRouting: true,
       },
       ipam: {
         mode: 'eni',
@@ -1049,39 +1045,115 @@ new k8s.apiextensions.CustomResource(
 
 // === EKS === ArgoCD ===
 
-new k8s.helm.v3.Release(
+// TODO: use server side apply and diff by default once https://github.com/argoproj/argo-cd/issues/18548 is resolved
+const argoCDReleaseConfig = {
+  name: 'argocd',
+  chart: 'argo-cd',
+  version: '7.1.3',
+  namespace: 'argocd',
+  repo: 'https://argoproj.github.io/argo-helm',
+  values: {
+    configs: {
+      repositories: {
+        sdp: {
+          url: config.git.repo,
+          username: config.git.username,
+          password: config.git.password,
+        },
+      },
+    },
+    controller: {
+      resources: {
+        requests: {
+          cpu: '0.2',
+          memory: '512Mi',
+        },
+        limits: {
+          memory: '1Gi',
+        },
+      },
+    },
+  },
+}
+const argocd = new k8s.helm.v3.Release(
   nm('argocd'),
   {
-    name: 'argocd',
-    chart: 'argo-cd',
-    version: '7.1.1',
-    namespace: 'argocd',
+    name: argoCDReleaseConfig.name,
+    chart: argoCDReleaseConfig.chart,
+    version: argoCDReleaseConfig.version,
+    namespace: argoCDReleaseConfig.namespace,
     repositoryOpts: {
-      repo: 'https://argoproj.github.io/argo-helm',
+      repo: argoCDReleaseConfig.repo,
     },
-    values: {
-      configs: {
-        repositories: {
-          sdp: {
-            url: config.git.repo,
-            username: config.git.username,
-            password: config.git.password,
-          },
-        },
-      },
-      controller: {
-        resources: {
-          requests: {
-            cpu: '0.2',
-            memory: '512Mi',
-          },
-          limits: {
-            memory: '1Gi',
-          },
-        },
-      },
-    },
+    values: argoCDReleaseConfig.values,
     createNamespace: true,
+  },
+  { provider },
+)
+
+// project
+const project = new k8s.apiextensions.CustomResource(
+  nm('project'),
+  {
+    apiVersion: 'argoproj.io/v1alpha1',
+    kind: 'AppProject',
+    metadata: {
+      name: config.pulumi.project,
+      namespace: argocd.namespace,
+      finalizers: ['resources-finalizer.argocd.argoproj.io'],
+    },
+    spec: {
+      sourceRepos: ['*'],
+      destinations: [
+        {
+          namespace: '*',
+          server: 'https://kubernetes.default.svc',
+        },
+      ],
+      clusterResourceWhitelist: [
+        {
+          group: '*',
+          kind: '*',
+        },
+      ],
+    },
+  },
+  { provider },
+)
+
+// bootstrap
+new k8s.apiextensions.CustomResource(
+  nm('argocd-application'),
+  {
+    apiVersion: 'argoproj.io/v1alpha1',
+    kind: 'Application',
+    metadata: {
+      name: argocd.name,
+      namespace: argocd.namespace,
+      finalizers: ['resources-finalizer.argocd.argoproj.io'],
+    },
+    spec: {
+      project: project.metadata.name,
+      source: {
+        repoURL: argocd.repositoryOpts.repo,
+        chart: argocd.chart,
+        targetRevision: argocd.version,
+        helm: {
+          values: pulumi.jsonStringify(argocd.values),
+        },
+      },
+      destination: {
+        server: 'https://kubernetes.default.svc',
+        namespace: argocd.namespace,
+      },
+      syncPolicy: {
+        automated: {
+          prune: true,
+          selfHeal: true,
+        },
+        syncOptions: ['PruneLast=true', 'ApplyOutOfSyncOnly=true'],
+      },
+    },
   },
   { provider },
 )

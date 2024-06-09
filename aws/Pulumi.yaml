@@ -1,5 +1,5 @@
 name: sdp-aws
-description: Software Delivery Platform - AWS Infrastructure
+description: Software Delivery Platform - AWS
 config:
   pulumi:disable-default-providers:
     - kubernetes
