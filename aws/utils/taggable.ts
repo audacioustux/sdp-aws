@@ -2,7 +2,7 @@
  * isTaggable returns true if the given resource type is an AWS resource that supports tags.
  */
 export function isTaggable(t: string): boolean {
-  return taggableResourceTypes.indexOf(t) !== -1
+  return taggableResourceTypes.includes(t)
 }
 
 // taggableResourceTypes is a list of known AWS type tokens that are taggable.

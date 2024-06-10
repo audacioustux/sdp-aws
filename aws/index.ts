@@ -2,7 +2,7 @@ import * as aws from '@pulumi/aws'
 import * as pulumi from '@pulumi/pulumi'
 import * as eks from '@pulumi/eks'
 import * as k8s from '@pulumi/kubernetes'
-import { registerAutoTags } from './utils/autotag.ts'
+import { registerAutoTags } from './utils/autoTag.ts'
 import * as config from './config.ts'
 import { assumeRoleForEKSPodIdentity } from './utils/policyStatement.ts'
 
@@ -187,8 +187,6 @@ const {
   instanceRole: eksInstanceRole,
 })
 
-const clusterSecurityGroupId = eksCluster.vpcConfig.clusterSecurityGroupId
-
 // === EKS === Node Group ===
 
 const defaultNodeGroupName = nm('default')
@@ -212,9 +210,31 @@ new eks.ManagedNodeGroup(defaultNodeGroupName, {
   ],
 })
 
+// === EKS === Limit Range === Kube System ===
+
+const kubeSystemLimitRange = new k8s.core.v1.LimitRange(
+  nm('kube-system-limit-range'),
+  {
+    metadata: {
+      name: 'default-limit-range',
+      namespace: 'kube-system',
+    },
+    spec: {
+      limits: [
+        {
+          default: config.defaults.pod.resources.limits,
+          defaultRequest: config.defaults.pod.resources.requests,
+          type: 'Container',
+        },
+      ],
+    },
+  },
+  { provider },
+)
+
 // === EKS === Cilium ===
 
-new k8s.helm.v3.Release(
+const cilium = new k8s.helm.v3.Release(
   nm('cilium'),
   {
     name: 'cilium',
@@ -230,8 +250,7 @@ new k8s.helm.v3.Release(
       k8sServiceHost: cluster.endpoint.apply((endpoint) => endpoint.replace('https://', '')),
       resources: {
         requests: {
-          cpu: '0.2',
-          memory: '256Mi',
+          memory: '128Mi',
         },
         limits: {
           memory: '512Mi',
@@ -297,9 +316,6 @@ new k8s.helm.v3.Release(
   { provider },
 )
 
-// TODO: Move Addons to Helm Releases
-// NOTE: EKS Addons are not as flexible/configurable as Helm Charts. e.g. https://github.com/kubernetes-sigs/aws-efs-csi-driver/issues/1181
-
 // === EKS === Addons === CoreDNS ===
 
 new aws.eks.Addon(nm('coredns'), {
@@ -313,9 +329,6 @@ new aws.eks.Addon(nm('coredns'), {
     }),
   ).version,
   resolveConflictsOnUpdate: 'OVERWRITE',
-  configurationValues: JSON.stringify({
-    resources: config.defaults.pod.resources,
-  }),
 })
 
 // === EKS === Addons === Pod Identity Agent ===
@@ -332,9 +345,6 @@ new aws.eks.Addon(nm('pod-identity-agent'), {
       }),
   ).version,
   resolveConflictsOnUpdate: 'OVERWRITE',
-  configurationValues: JSON.stringify({
-    resources: config.defaults.pod.resources,
-  }),
 })
 
 // === EKS === Addons === EBS CSI Driver ===
@@ -443,7 +453,6 @@ new aws.eks.Addon(nm('efs-csi-driver'), {
   ).version,
   serviceAccountRoleArn: efsCsiDriverRole.arn,
   resolveConflictsOnUpdate: 'OVERWRITE',
-  // TODO: add resource requirements
 })
 
 // === EKS === Addons === S3 Mountpoint Driver ===
@@ -942,7 +951,7 @@ const karpenter = new k8s.helm.v3.Release(
       controller: {
         resources: {
           requests: {
-            memory: '256Mi',
+            memory: '128Mi',
           },
           limits: {
             memory: '512Mi',
@@ -973,7 +982,7 @@ const defaultNodeClass = new k8s.apiextensions.CustomResource(
       subnetSelectorTerms: privateSubnets.map(({ id }) => ({ id })),
       securityGroupSelectorTerms: [
         {
-          id: clusterSecurityGroupId,
+          id: eksCluster.vpcConfig.clusterSecurityGroupId,
         },
       ],
     },
@@ -1043,122 +1052,202 @@ new k8s.apiextensions.CustomResource(
   { provider, dependsOn: [karpenter] },
 )
 
-// === EKS === ArgoCD ===
+// === EKS === Kyverno ===
 
-// TODO: use server side apply and diff by default once https://github.com/argoproj/argo-cd/issues/18548 is resolved
-const argoCDReleaseConfig = {
-  name: 'argocd',
-  chart: 'argo-cd',
-  version: '7.1.3',
-  namespace: 'argocd',
-  repo: 'https://argoproj.github.io/argo-helm',
-  values: {
-    configs: {
-      repositories: {
-        sdp: {
-          url: config.git.repo,
-          username: config.git.username,
-          password: config.git.password,
-        },
-      },
-    },
-    controller: {
-      resources: {
-        requests: {
-          cpu: '0.2',
-          memory: '512Mi',
-        },
-        limits: {
-          memory: '1Gi',
-        },
-      },
-    },
-  },
-}
-const argocd = new k8s.helm.v3.Release(
-  nm('argocd'),
+const kyverno = new k8s.helm.v3.Release(
+  nm('kyverno'),
   {
-    name: argoCDReleaseConfig.name,
-    chart: argoCDReleaseConfig.chart,
-    version: argoCDReleaseConfig.version,
-    namespace: argoCDReleaseConfig.namespace,
+    name: 'kyverno',
+    chart: 'kyverno',
+    version: '3.2.4',
+    namespace: 'kyverno',
     repositoryOpts: {
-      repo: argoCDReleaseConfig.repo,
+      repo: 'https://kyverno.github.io/kyverno/',
     },
-    values: argoCDReleaseConfig.values,
     createNamespace: true,
   },
   { provider },
 )
 
-// project
-const project = new k8s.apiextensions.CustomResource(
-  nm('project'),
-  {
-    apiVersion: 'argoproj.io/v1alpha1',
-    kind: 'AppProject',
-    metadata: {
-      name: config.pulumi.project,
-      namespace: argocd.namespace,
-      finalizers: ['resources-finalizer.argocd.argoproj.io'],
-    },
-    spec: {
-      sourceRepos: ['*'],
-      destinations: [
-        {
-          namespace: '*',
-          server: 'https://kubernetes.default.svc',
-        },
-      ],
-      clusterResourceWhitelist: [
-        {
-          group: '*',
-          kind: '*',
-        },
-      ],
-    },
-  },
-  { provider },
-)
+// TODO: Enable kyverno policies
+// new k8s.helm.v3.Release(
+//   nm('kyverno-policies'),
+//   {
+//     name: 'kyverno-policies',
+//     chart: 'kyverno-policies',
+//     version: '3.2.3 ',
+//     namespace: kyverno.namespace,
+//     repositoryOpts: {
+//       repo: 'https://kyverno.github.io/kyverno/',
+//     },
+//   },
+//   { provider },
+// )
 
-// bootstrap
+// === EKS === Limit Range === All Namespaces ===
+
 new k8s.apiextensions.CustomResource(
-  nm('argocd-application'),
+  nm('add-ns-limit-range'),
   {
-    apiVersion: 'argoproj.io/v1alpha1',
-    kind: 'Application',
+    apiVersion: 'kyverno.io/v1',
+    kind: 'ClusterPolicy',
     metadata: {
-      name: argocd.name,
-      namespace: argocd.namespace,
-      finalizers: ['resources-finalizer.argocd.argoproj.io'],
+      name: 'add-ns-limit-range',
+      annotations: {
+        'policies.kyverno.io/title': 'Add LimitRange policy to all Namespaces',
+        'policies.kyverno.io/category': 'Other',
+        'policies.kyverno.io/severity': 'medium',
+        'kyverno.io/kyverno-version': kyverno.version,
+        'kyverno.io/kubernetes-version': eksCluster.version,
+        'policies.kyverno.io/subject': 'LimitRange',
+        'policies.kyverno.io/description': `Pods which don't specify at least resource requests are assigned a QoS class of BestEffort which can hog resources for other Pods on Nodes. At a minimum, all Pods should specify resource requests in order to be labeled as the QoS class Burstable. This policy creates a LimitRange policy in each Namespace to ensure some default values are set.`,
+      },
     },
     spec: {
-      project: project.metadata.name,
-      source: {
-        repoURL: argocd.repositoryOpts.repo,
-        chart: argocd.chart,
-        targetRevision: argocd.version,
-        helm: {
-          values: pulumi.jsonStringify(argocd.values),
+      generateExisting: true,
+      rules: [
+        {
+          name: 'generate-ns-limit-range',
+          match: {
+            resources: {
+              kinds: ['Namespace'],
+            },
+          },
+          generate: {
+            apiVersion: 'v1',
+            kind: 'LimitRange',
+            name: kubeSystemLimitRange.metadata.name,
+            namespace: '{{request.object.metadata.name}}',
+            synchronize: true,
+            data: {
+              spec: kubeSystemLimitRange.spec,
+            },
+          },
         },
-      },
-      destination: {
-        server: 'https://kubernetes.default.svc',
-        namespace: argocd.namespace,
-      },
-      syncPolicy: {
-        automated: {
-          prune: true,
-          selfHeal: true,
-        },
-        syncOptions: ['PruneLast=true', 'ApplyOutOfSyncOnly=true'],
-      },
+      ],
+    },
+  },
+  { provider, dependsOn: [kyverno] },
+)
+
+// === EKS === External System ===
+
+const externalSystemNamespace = new k8s.core.v1.Namespace(
+  nm('external-system'),
+  { metadata: { name: 'external-system' } },
+  { provider },
+)
+
+// === EKS === External System === External Secrets ===
+
+const eso = new k8s.helm.v3.Release(
+  nm('external-secrets'),
+  {
+    name: 'external-secrets',
+    chart: 'external-secrets',
+    version: '0.9.18',
+    namespace: externalSystemNamespace.metadata.name,
+    repositoryOpts: {
+      repo: 'https://charts.external-secrets.io',
+    },
+    values: {
+      installCRDs: true,
     },
   },
   { provider },
 )
 
-// === EKS === External DNS === IAM ===
+const esoSARole = new aws.iam.Role(nm('external-secrets-role'), {
+  assumeRolePolicy: assumeRoleForEKSPodIdentity(),
+})
+const esoRoleName = nm('external-secrets-operator-role')
+const esoRole = new aws.iam.Role(esoRoleName, {
+  assumeRolePolicy: {
+    Version: '2012-10-17',
+    Statement: [
+      {
+        Action: ['sts:AssumeRole', 'sts:TagSession'],
+        Effect: 'Allow',
+        Principal: {
+          AWS: esoSARole.arn,
+        },
+      },
+    ],
+  },
+})
+const esoPolicyName = nm('external-secrets-policy')
+const esoPolicy = new aws.iam.Policy(esoPolicyName, {
+  policy: aws.iam
+    .getPolicyDocument({
+      statements: [
+        {
+          effect: 'Allow',
+          actions: [
+            'secretsmanager:GetResourcePolicy',
+            'secretsmanager:GetSecretValue',
+            'secretsmanager:DescribeSecret',
+            'secretsmanager:ListSecretVersionIds',
+            'secretsmanager:ListSecrets',
+          ],
+          resources: ['*'],
+        },
+      ],
+    })
+    .then((doc) => doc.json),
+})
+new aws.iam.RolePolicyAttachment(esoRoleName, {
+  policyArn: esoPolicy.arn,
+  role: esoRole,
+})
+new aws.eks.PodIdentityAssociation(nm('external-secrets-pod-identity'), {
+  clusterName: eksCluster.name,
+  namespace: externalSystemNamespace.metadata.name,
+  serviceAccount: 'external-secrets',
+  roleArn: esoSARole.arn,
+})
+
+const esoStore = new k8s.apiextensions.CustomResource(
+  nm('aws-secrets-store'),
+  {
+    apiVersion: 'external-secrets.io/v1beta1',
+    kind: 'ClusterSecretStore',
+    metadata: {
+      name: 'aws-secrets-store',
+    },
+    spec: {
+      provider: {
+        aws: {
+          service: 'SecretsManager',
+          region: regionId,
+          role: esoRole.arn,
+        },
+      },
+    },
+  },
+  { provider, dependsOn: [eso] },
+)
+
+// === EKS === External System === External DNS ===
+
+const externalDNS = new k8s.helm.v3.Release(
+  nm('external-dns'),
+  {
+    name: 'external-dns',
+    chart: 'external-dns',
+    namespace: externalSystemNamespace.metadata.name,
+    version: '1.14.4',
+    repositoryOpts: {
+      repo: 'https://kubernetes-sigs.github.io/external-dns/',
+    },
+    values: {
+      serviceAccount: {
+        create: true,
+        name: 'external-dns',
+      },
+    },
+  },
+  { provider },
+)
 
 const externalDNSPolicyName = nm('external-dns-policy')
 const externalDNSPolicy = new aws.iam.Policy(externalDNSPolicyName, {
@@ -1189,34 +1278,14 @@ new aws.iam.RolePolicyAttachment(externalDNSRoleName, {
 })
 new aws.eks.PodIdentityAssociation(nm('external-dns-pod-identity'), {
   clusterName: eksCluster.name,
-  namespace: 'external-dns',
+  namespace: externalSystemNamespace.metadata.name,
   serviceAccount: 'external-dns',
   roleArn: externalDNSRole.arn,
 })
-new k8s.helm.v3.Release(
-  nm('external-dns'),
-  {
-    name: 'external-dns',
-    chart: 'external-dns',
-    namespace: 'external-dns',
-    version: '1.14.4',
-    repositoryOpts: {
-      repo: 'https://kubernetes-sigs.github.io/external-dns/',
-    },
-    values: {
-      serviceAccount: {
-        create: true,
-        name: 'external-dns',
-      },
-    },
-    createNamespace: true,
-  },
-  { provider },
-)
 
 // === EKS === Cert Manager ===
 
-new k8s.helm.v3.Release(
+const certManager = new k8s.helm.v3.Release(
   nm('cert-manager'),
   {
     name: 'cert-manager',
@@ -1297,7 +1366,7 @@ const monitoringNamespace = new k8s.core.v1.Namespace(
 
 // === EKS === Monitoring === Metrics Server ===
 
-new k8s.helm.v3.Release(
+const metricsServer = new k8s.helm.v3.Release(
   nm('metrics-server'),
   {
     name: 'metrics-server',
@@ -1310,7 +1379,7 @@ new k8s.helm.v3.Release(
     values: {
       resources: {
         requests: {
-          memory: '128Mi',
+          memory: '64Mi',
         },
         limits: {
           memory: '256Mi',
@@ -1323,7 +1392,7 @@ new k8s.helm.v3.Release(
 
 // === EKS === Monitoring === Kube Prometheus Stack ===
 
-new k8s.helm.v3.Release(
+const kubePrometheusStack = new k8s.helm.v3.Release(
   nm('kube-prometheus-stack'),
   {
     name: 'kube-prometheus-stack',
@@ -1460,7 +1529,7 @@ new aws.iam.UserPolicyAttachment(nm('loki-user-policy'), {
   user: lokiUser,
 })
 
-new k8s.helm.v3.Release(
+const loki = new k8s.helm.v3.Release(
   nm('loki'),
   {
     name: 'loki',
@@ -1482,7 +1551,7 @@ new k8s.helm.v3.Release(
       write: {
         resources: {
           requests: {
-            memory: '256Mi',
+            memory: '128Mi',
           },
           limits: {
             memory: '512Mi',
@@ -1492,7 +1561,7 @@ new k8s.helm.v3.Release(
       read: {
         resources: {
           requests: {
-            memory: '256Mi',
+            memory: '128Mi',
           },
           limits: {
             memory: '512Mi',
@@ -1538,7 +1607,7 @@ new k8s.helm.v3.Release(
 
 // === EKS === Monitoring === Promtail ===
 
-new k8s.helm.v3.Release(
+const promtail = new k8s.helm.v3.Release(
   nm('promtail'),
   {
     name: 'promtail',
@@ -1561,96 +1630,6 @@ new k8s.helm.v3.Release(
   { provider },
 )
 
-// === EKS === External Secrets ===
-
-const eso = new k8s.helm.v3.Release(
-  nm('external-secrets'),
-  {
-    name: 'external-secrets',
-    chart: 'external-secrets',
-    version: '0.9.18',
-    namespace: 'external-secrets',
-    repositoryOpts: {
-      repo: 'https://charts.external-secrets.io',
-    },
-    values: {
-      installCRDs: true,
-    },
-    createNamespace: true,
-  },
-  { provider },
-)
-
-const esoSARole = new aws.iam.Role(nm('external-secrets-role'), {
-  assumeRolePolicy: assumeRoleForEKSPodIdentity(),
-})
-const esoRoleName = nm('external-secrets-operator-role')
-const esoRole = new aws.iam.Role(esoRoleName, {
-  assumeRolePolicy: {
-    Version: '2012-10-17',
-    Statement: [
-      {
-        Action: ['sts:AssumeRole', 'sts:TagSession'],
-        Effect: 'Allow',
-        Principal: {
-          AWS: esoSARole.arn,
-        },
-      },
-    ],
-  },
-})
-const esoPolicyName = nm('external-secrets-policy')
-const esoPolicy = new aws.iam.Policy(esoPolicyName, {
-  policy: aws.iam
-    .getPolicyDocument({
-      statements: [
-        {
-          effect: 'Allow',
-          actions: [
-            'secretsmanager:GetResourcePolicy',
-            'secretsmanager:GetSecretValue',
-            'secretsmanager:DescribeSecret',
-            'secretsmanager:ListSecretVersionIds',
-            'secretsmanager:ListSecrets',
-          ],
-          resources: ['*'],
-        },
-      ],
-    })
-    .then((doc) => doc.json),
-})
-new aws.iam.RolePolicyAttachment(esoRoleName, {
-  policyArn: esoPolicy.arn,
-  role: esoRole,
-})
-new aws.eks.PodIdentityAssociation(nm('external-secrets-pod-identity'), {
-  clusterName: eksCluster.name,
-  namespace: 'kube-system',
-  serviceAccount: 'external-secrets',
-  roleArn: esoSARole.arn,
-})
-
-new k8s.apiextensions.CustomResource(
-  nm('aws-secrets-store'),
-  {
-    apiVersion: 'external-secrets.io/v1beta1',
-    kind: 'ClusterSecretStore',
-    metadata: {
-      name: 'aws-secrets-store',
-    },
-    spec: {
-      provider: {
-        aws: {
-          service: 'SecretsManager',
-          region: regionId,
-          role: esoRole.arn,
-        },
-      },
-    },
-  },
-  { provider, dependsOn: [eso] },
-)
-
 // === EKS === EFS ===
 
 const efs = new aws.efs.FileSystem(nm('efs'), {
@@ -1666,7 +1645,7 @@ privateSubnets.forEach((subnet, index) => {
   new aws.efs.MountTarget(nm(`efs-${index}`), {
     fileSystemId: efs.id,
     subnetId: subnet.id,
-    securityGroups: [clusterSecurityGroupId],
+    securityGroups: [eksCluster.vpcConfig.clusterSecurityGroupId],
   })
 })
 new k8s.storage.v1.StorageClass(
@@ -1686,99 +1665,175 @@ new k8s.storage.v1.StorageClass(
   { provider },
 )
 
-// === EKS === Kyverno ===
+// === EKS === ArgoCD ===
 
-const kyverno = new k8s.helm.v3.Release(
-  nm('kyverno'),
+const argocdNamespace = new k8s.core.v1.Namespace(nm('argocd'), { metadata: { name: 'argocd' } }, { provider })
+const argocd = new k8s.helm.v3.Release(
+  nm('argocd'),
   {
-    name: 'kyverno',
-    chart: 'kyverno',
-    version: '3.2.4',
-    namespace: 'kyverno',
+    name: 'argocd',
+    chart: 'argo-cd',
+    namespace: argocdNamespace.metadata.name,
+    version: '7.1.3',
     repositoryOpts: {
-      repo: 'https://kyverno.github.io/kyverno/',
+      repo: 'https://argoproj.github.io/argo-helm',
     },
-    createNamespace: true,
+    values: {
+      configs: {
+        repositories: {
+          sdp: {
+            url: config.git.repo,
+            username: config.git.username,
+            password: config.git.password,
+          },
+        },
+      },
+      controller: {
+        resources: {
+          requests: {
+            memory: '512Mi',
+          },
+          limits: {
+            memory: '2Gi',
+          },
+        },
+      },
+      repoServer: {
+        resources: {
+          requests: {
+            memory: '128Mi',
+          },
+          limits: {
+            memory: '512Mi',
+          },
+        },
+      },
+    },
   },
   { provider },
 )
 
-// TODO: Enable kyverno policies
-// new k8s.helm.v3.Release(
-//   nm('kyverno-policies'),
-//   {
-//     name: 'kyverno-policies',
-//     chart: 'kyverno-policies',
-//     version: '3.2.3 ',
-//     namespace: kyverno.namespace,
-//     repositoryOpts: {
-//       repo: 'https://kyverno.github.io/kyverno/',
-//     },
-//   },
-//   { provider },
-// )
+// === EKS === ArgoCD === Bootstrap ===
 
-// === EKS === Kyverno === Policies ===
-
+const project = config.pulumi.project
 new k8s.apiextensions.CustomResource(
-  nm('add-default-resources'),
+  nm('project'),
   {
-    apiVersion: 'kyverno.io/v1',
-    kind: 'ClusterPolicy',
+    apiVersion: 'argoproj.io/v1alpha1',
+    kind: 'AppProject',
     metadata: {
-      name: 'add-default-pod-limit-range',
-      annotations: {
-        'policies.kyverno.io/title': 'Add Default Pod Limit Range',
-        'policies.kyverno.io/category': 'Other',
-        'policies.kyverno.io/severity': 'medium',
-        'kyverno.io/kyverno-version': kyverno.version,
-        'kyverno.io/kubernetes-version': eksCluster.version,
-        'policies.kyverno.io/subject': 'LimitRange',
-        'policies.kyverno.io/description': `Pods which don't specify at least resource requests are assigned a QoS class of BestEffort which can hog resources for other Pods on Nodes. At a minimum, all Pods should specify resource requests in order to be labeled as the QoS class Burstable. This policy adds default resource requests and limits to Pods that don't specify them.`,
-      },
+      name: project,
+      namespace: argocdNamespace.metadata.name,
+      finalizers: ['resources-finalizer.argocd.argoproj.io'],
     },
     spec: {
-      generateExisting: true,
-      rules: [
+      sourceRepos: ['*'],
+      destinations: [
         {
-          name: 'generate-pod-limit-range',
-          match: {
-            resources: {
-              kinds: ['Namespace'],
-            },
-          },
-          generate: {
-            apiVersion: 'v1',
-            kind: 'LimitRange',
-            name: 'default-pod-limit-range',
-            namespace: '{{request.object.metadata.name}}',
-            synchronize: true,
-            data: {
-              spec: {
-                limits: [
-                  {
-                    default: config.defaults.pod.resources.limits,
-                    defaultRequest: config.defaults.pod.resources.requests,
-                    type: 'Container',
-                  },
-                ],
-              },
-            },
-          },
+          namespace: '*',
+          server: 'https://kubernetes.default.svc',
+        },
+      ],
+      clusterResourceWhitelist: [
+        {
+          group: '*',
+          kind: '*',
         },
       ],
     },
   },
-  { provider, dependsOn: [kyverno] },
+  { provider },
 )
+
+function registerHelmRelease(release: k8s.helm.v3.Release) {
+  release.name.apply((name) => {
+    const {
+      namespace,
+      version: targetRevision,
+      chart: chartId,
+      values,
+      repositoryOpts: { repo },
+    } = release
+
+    const { repoURL, chartName: chart } = chartId.apply((chartId) => {
+      if (!chartId.startsWith('oci://'))
+        return {
+          repoURL: repo,
+          chartName: chartId,
+        }
+
+      const withoutPrefix = chartId.replace('oci://', '')
+      const parts = withoutPrefix.split('/')
+
+      return {
+        repoURL: parts.slice(0, -1).join('/'),
+        chartName: parts.slice(-1)[0],
+      }
+    })
+
+    // TODO: use server side apply and diff by default once https://github.com/argoproj/argo-cd/issues/18548 is resolved
+    new k8s.apiextensions.CustomResource(
+      nm(name),
+      {
+        apiVersion: 'argoproj.io/v1alpha1',
+        kind: 'Application',
+        metadata: {
+          name,
+          namespace: 'argocd',
+          // no finalizers, only pulumi will manage deletion
+        },
+        spec: {
+          project,
+          source: {
+            repoURL,
+            chart,
+            targetRevision,
+            helm: {
+              values: pulumi.jsonStringify(values),
+            },
+          },
+          destination: {
+            server: 'https://kubernetes.default.svc',
+            namespace,
+          },
+          syncPolicy: {
+            automated: {
+              selfHeal: true,
+              prune: true,
+            },
+            retry: {
+              limit: 10,
+              backoff: {
+                duration: '5s',
+                factor: 2,
+                maxDuration: '5m',
+              },
+            },
+            syncOptions: ['PruneLast=true', 'ApplyOutOfSyncOnly=true'],
+          },
+        },
+      },
+      { provider },
+    )
+  })
+}
+;[
+  karpenterCRD,
+  karpenter,
+  externalDNS,
+  certManager,
+  metricsServer,
+  kubePrometheusStack,
+  loki,
+  promtail,
+  eso,
+  kyverno,
+  argocd,
+  cilium,
+].forEach((release) => registerHelmRelease(release))
 
 // === Exports ===
 
-export const esoConfig = {
-  clusterSecretStore: {
-    aws: 'aws-secrets-store',
-  },
-}
+const esoStoreName = esoStore.metadata.name
 
-// TODO: export all
-export { kubeconfig, vpc, publicRouteTable, privateRouteTable, clusterSecurityGroupId }
+export { kubeconfig, esoStoreName }
