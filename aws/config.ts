@@ -34,4 +34,6 @@ const defaults = {
   },
 }
 
+// TODO: move all hardcoded versions to this file
+
 export { git, pulumi, grafana, defaults }

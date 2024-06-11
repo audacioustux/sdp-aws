@@ -6,15 +6,17 @@ import { registerAutoTags } from './utils/autoTag.ts'
 import * as config from './config.ts'
 import { assumeRoleForEKSPodIdentity } from './utils/policyStatement.ts'
 
+const { project, organization, stack } = config.pulumi
+
 // Automatically inject tags.
 registerAutoTags({
-  'pulumi:Organization': config.pulumi.organization,
-  'pulumi:Project': config.pulumi.project,
-  'pulumi:Stack': config.pulumi.stack,
+  'pulumi:Organization': organization,
+  'pulumi:Project': project,
+  'pulumi:Stack': stack,
 })
 
-const nm = (name: string) => `${config.pulumi.project}-${config.pulumi.stack}-${name}`
-const nmo = (name: string) => `${nm(name)}-${config.pulumi.organization}`
+const nm = (name: string) => `${project}-${stack}-${name}`
+const nmo = (name: string) => `${nm(name)}-${organization}`
 
 // === VPC ===
 
@@ -232,6 +234,16 @@ const kubeSystemLimitRange = new k8s.core.v1.LimitRange(
   { provider },
 )
 
+// === EKS === Gateway API ===
+
+const gatewayAPI = new k8s.yaml.ConfigFile(
+  nm('gateway-api'),
+  {
+    file: 'https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.1.0/standard-install.yaml',
+  },
+  { provider },
+)
+
 // === EKS === Cilium ===
 
 const cilium = new k8s.helm.v3.Release(
@@ -265,6 +277,9 @@ const cilium = new k8s.helm.v3.Release(
             'service.beta.kubernetes.io/aws-load-balancer-type': 'nlb',
           },
         },
+      },
+      gatewayAPI: {
+        enabled: true,
       },
       hubble: {
         relay: {
@@ -313,7 +328,7 @@ const cilium = new k8s.helm.v3.Release(
       },
     },
   },
-  { provider },
+  { provider, dependsOn: [gatewayAPI] },
 )
 
 // === EKS === Addons === CoreDNS ===
@@ -1715,7 +1730,6 @@ const argocd = new k8s.helm.v3.Release(
 
 // === EKS === ArgoCD === Bootstrap ===
 
-const project = config.pulumi.project
 new k8s.apiextensions.CustomResource(
   nm('project'),
   {
@@ -1745,7 +1759,7 @@ new k8s.apiextensions.CustomResource(
   { provider },
 )
 
-function registerHelmRelease(release: k8s.helm.v3.Release) {
+function registerHelmRelease(release: k8s.helm.v3.Release, project: string) {
   release.name.apply((name) => {
     const {
       namespace,
@@ -1830,7 +1844,7 @@ function registerHelmRelease(release: k8s.helm.v3.Release) {
   kyverno,
   argocd,
   cilium,
-].forEach((release) => registerHelmRelease(release))
+].forEach((release) => registerHelmRelease(release, project))
 
 // === Exports ===
 
