@@ -1,7 +1,7 @@
 {
-  "name": "Dev Container",
+  "name": "Dev Container - audacioustux/sdp-aws",
   "dockerComposeFile": "compose.yml",
-  "service": "zeroaws",
+  "service": "sdp-aws",
   "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
   "customizations": {
     "vscode": {

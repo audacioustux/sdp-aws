@@ -1221,13 +1221,14 @@ new aws.eks.PodIdentityAssociation(nm('external-secrets-pod-identity'), {
   roleArn: esoSARole.arn,
 })
 
-const esoStore = new k8s.apiextensions.CustomResource(
-  nm('aws-secrets-store'),
+const clusterSecretStoreAWS = 'aws-secrets-store'
+new k8s.apiextensions.CustomResource(
+  nm(clusterSecretStoreAWS),
   {
     apiVersion: 'external-secrets.io/v1beta1',
     kind: 'ClusterSecretStore',
     metadata: {
-      name: 'aws-secrets-store',
+      name: clusterSecretStoreAWS,
     },
     spec: {
       provider: {
@@ -1848,6 +1849,8 @@ function registerHelmRelease(release: k8s.helm.v3.Release, project: string) {
 
 // === Exports ===
 
-const esoStoreName = esoStore.metadata.name
+export const clusterSecretStores = {
+  aws: clusterSecretStoreAWS,
+}
 
-export { kubeconfig, esoStoreName }
+export { kubeconfig, publicRouteTable, privateRouteTable, vpc }

@@ -1,17 +1,8 @@
-version: "3"
+version: '3'
 
 dotenv: [".env"]
 
-includes:
-  aws:
-    taskfile: aws
-    dir: aws
-
 tasks:
-  default:
-    cmd: task --list-all
-    silent: true
-
   pulumi:org:set-default:
     cmds:
       - echo "Setting default Pulumi organization to - $PULUMI_DEFAULT_ORG"
@@ -20,16 +11,18 @@ tasks:
   deps:
     deps: 
       - pulumi:org:set-default
-      - aws:deps
+    cmd: pulumi install
 
   format:
-    deps: 
-      - aws:format
+    deps: [deps]
+    cmd: pnpm run format
 
   up:
-    cmds: 
-      - task deps
-      - task aws:up -- -r {{.CLI_ARGS}}
+    deps: [deps]
+    env:
+      PULUMI_K8S_ENABLE_SERVER_SIDE_APPLY: true
+      PULUMI_K8S_CLIENT_TIMEOUT: 90
+    cmd: pulumi up -s prod {{.CLI_ARGS}}
 
   # miscellanea
   cloc: cloc . --vcs git

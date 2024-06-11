@@ -3,7 +3,7 @@ config:
   git:password:
     secure: AAABAMA8s6xPPlvbbNtVcQNoYfCsIdA4Y2jFgB67F0iNcq8gQn7WCow0U4cHMQrraO7aqIJJJhotfzWqbXSeEEC6+gEmI5xxrNOp5uGfqzJ22lrplqGhbVcNSfg/46viq5yFzczaYRRjdtKfzaNXyyy58V6X20pfUI7Yy44=
   git:path: sdp
-  git:repo: https://github.com/audacioustux/zeroaws
+  git:repo: https://github.com/audacioustux/sdp-aws
   git:username: audacioustux
   grafana:host:
     secure: AAABAFCImWELiim1SyDjCJJiKPbs6+u38cDH1pZypGNFlbZNb0+5X84lOjRfT4FiYEzdCszLSPh/fg==
