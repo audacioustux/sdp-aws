@@ -195,12 +195,8 @@ const defaultNodeGroupName = nm('default')
 new eks.ManagedNodeGroup(defaultNodeGroupName, {
   cluster,
   nodeGroupName: defaultNodeGroupName,
-  // TODO: increase pod density with kubelet extraArgs
-  // NOTE: https://github.com/pulumi/pulumi-eks/issues/1179
-  // instanceTypes: ['m7g.medium', 'm7gd.medium', 't4g.medium', 'r7g.medium'],
   instanceTypes: ['t4g.medium'], // t4g has the most pod limit by default
   capacityType: 'SPOT',
-  // amiType: 'BOTTLEROCKET_ARM_64',
   amiType: 'AL2023_ARM_64_STANDARD',
   nodeRole: cluster.instanceRoles[0],
   taints: [
@@ -210,6 +206,14 @@ new eks.ManagedNodeGroup(defaultNodeGroupName, {
       effect: 'NO_EXECUTE',
     },
   ],
+  // TODO: switch to Bottlerocket
+  // NOTE: https://github.com/pulumi/pulumi-eks/issues/1179
+  // NOTE: https://github.com/bottlerocket-os/bottlerocket/issues/1721
+  // NOTE: https://github.com/cilium/cilium/issues/32616#issuecomment-2126367506
+  // amiType: 'BOTTLEROCKET_ARM_64',
+  // instanceTypes: ['m7g.medium', 'm7gd.medium', 't4g.medium', 'r7g.medium'],
+  // kubeletExtraArgs: '--max-pods=110',
+  // bootstrapExtraArgs: '--use-max-pods false',
 })
 
 // === EKS === Limit Range === Kube System ===
@@ -224,7 +228,9 @@ const kubeSystemLimitRange = new k8s.core.v1.LimitRange(
     spec: {
       limits: [
         {
-          default: config.defaults.pod.resources.limits,
+          default: {
+            memory: '256Mi',
+          },
           defaultRequest: config.defaults.pod.resources.requests,
           type: 'Container',
         },
@@ -300,7 +306,14 @@ const cilium = new k8s.helm.v3.Release(
       },
       operator: {
         rollOutPods: true,
-        resources: config.defaults.pod.resources,
+        resources: {
+          requests: {
+            memory: '64Mi',
+          },
+          limits: {
+            memory: '256Mi',
+          },
+        },
       },
       loadBalancer: {
         algorithm: 'maglev',
@@ -523,6 +536,10 @@ new aws.eks.Addon(nm('s3-mountpoint-driver'), {
   serviceAccountRoleArn: s3MountpointDriverRole.arn,
   resolveConflictsOnUpdate: 'OVERWRITE',
 })
+
+// === EKS === Addons === Snapshot Controller ===
+
+const snapshotControllerRoleName = nm('snapshot-controller-irsa')
 
 // === EC2 === Interruption Queue ===
 
@@ -1040,7 +1057,6 @@ new k8s.apiextensions.CustomResource(
             kind: 'EC2NodeClass',
             name: defaultNodeClass.metadata.name,
           },
-          // NOTE: https://github.com/bottlerocket-os/bottlerocket/issues/1721
           kubelet: {
             podsPerCore: 20,
             maxPods: 110,
@@ -1675,8 +1691,11 @@ new k8s.storage.v1.StorageClass(
     parameters: {
       fileSystemId: efs.id,
       provisioningMode: 'efs-ap',
-      directoryPerms: '755',
+      directoryPerms: '700',
+      uid: '0',
+      gid: '0',
     },
+    mountOptions: ['iam'],
   },
   { provider },
 )
@@ -1844,7 +1863,9 @@ function registerHelmRelease(release: k8s.helm.v3.Release, project: string) {
   eso,
   kyverno,
   argocd,
-  cilium,
+  // TODO: enable cilium
+  // NOTE: https://docs.cilium.io/en/latest/configuration/argocd-issues/
+  // cilium,
 ].forEach((release) => registerHelmRelease(release, project))
 
 // === Exports ===
@@ -1853,4 +1874,4 @@ export const clusterSecretStores = {
   aws: clusterSecretStoreAWS,
 }
 
-export { kubeconfig, publicRouteTable, privateRouteTable, vpc }
+export { kubeconfig, publicRouteTable, privateRouteTable, vpc, eksCluster }
