@@ -228,9 +228,7 @@ const kubeSystemLimitRange = new k8s.core.v1.LimitRange(
     spec: {
       limits: [
         {
-          default: {
-            memory: '256Mi',
-          },
+          default: config.defaults.pod.resources.limits,
           defaultRequest: config.defaults.pod.resources.requests,
           type: 'Container',
         },
