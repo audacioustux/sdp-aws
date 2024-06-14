@@ -6,6 +6,10 @@ import { registerAutoTags } from './utils/autoTag.ts'
 import * as config from './config.ts'
 import { assumeRoleForEKSPodIdentity } from './utils/policyStatement.ts'
 
+const partitionId = await aws.getPartition().then((partition) => partition.id)
+const regionId = await aws.getRegion().then((region) => region.id)
+const accountId = await aws.getCallerIdentity().then((identity) => identity.accountId)
+
 const { project, organization, stack } = config.pulumi
 
 // Automatically inject tags.
@@ -195,17 +199,9 @@ const defaultNodeGroupName = nm('default')
 new eks.ManagedNodeGroup(defaultNodeGroupName, {
   cluster,
   nodeGroupName: defaultNodeGroupName,
-  instanceTypes: ['t4g.medium'], // t4g has the most pod limit by default
-  capacityType: 'SPOT',
-  amiType: 'AL2023_ARM_64_STANDARD',
   nodeRole: cluster.instanceRoles[0],
-  taints: [
-    {
-      key: 'node.cilium.io/agent-not-ready',
-      value: 'true',
-      effect: 'NO_EXECUTE',
-    },
-  ],
+  subnetIds: privateSubnets.map((s) => s.id),
+  capacityType: 'SPOT',
   // TODO: switch to Bottlerocket
   // NOTE: https://github.com/pulumi/pulumi-eks/issues/1179
   // NOTE: https://github.com/bottlerocket-os/bottlerocket/issues/1721
@@ -214,6 +210,21 @@ new eks.ManagedNodeGroup(defaultNodeGroupName, {
   // instanceTypes: ['m7g.medium', 'm7gd.medium', 't4g.medium', 'r7g.medium'],
   // kubeletExtraArgs: '--max-pods=110',
   // bootstrapExtraArgs: '--use-max-pods false',
+  amiType: 'AL2023_ARM_64_STANDARD',
+  // NOTE: large node size so the Pod limit is less likely to be reached
+  instanceTypes: ['t4g.large'],
+  scalingConfig: {
+    minSize: 1,
+    maxSize: 1,
+    desiredSize: 1,
+  },
+  taints: [
+    {
+      key: 'node.cilium.io/agent-not-ready',
+      value: 'true',
+      effect: 'NO_EXECUTE',
+    },
+  ],
 })
 
 // === EKS === Limit Range === Kube System ===
@@ -238,6 +249,50 @@ const kubeSystemLimitRange = new k8s.core.v1.LimitRange(
   { provider },
 )
 
+// === EKS === Load Balancer Controller ===
+
+const loadBalancerControllerPolicy = new aws.iam.Policy(nm('load-balancer-controller-policy'), {
+  policy: await fetch(
+    'https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.7.2/docs/install/iam_policy.json',
+  ).then((res) => res.json()),
+})
+const loadBalancerControllerRoleName = nm('load-balancer-controller-role')
+const loadBalancerControllerRole = new aws.iam.Role(loadBalancerControllerRoleName, {
+  assumeRolePolicy: assumeRoleForEKSPodIdentity(),
+})
+const loadBalancerControllerRolePolicyAttachment = new aws.iam.RolePolicyAttachment(loadBalancerControllerRoleName, {
+  policyArn: loadBalancerControllerPolicy.arn,
+  role: loadBalancerControllerRole,
+})
+new aws.eks.PodIdentityAssociation(nm('load-balancer-controller-pod-identity'), {
+  clusterName: eksCluster.name,
+  namespace: 'kube-system',
+  serviceAccount: 'aws-load-balancer-controller',
+  roleArn: loadBalancerControllerRole.arn,
+})
+const loadBalancerController = new k8s.helm.v3.Release(
+  nm('load-balancer-controller'),
+  {
+    name: 'aws-load-balancer-controller',
+    chart: 'aws-load-balancer-controller',
+    namespace: 'kube-system',
+    repositoryOpts: {
+      repo: 'https://aws.github.io/eks-charts',
+    },
+    version: '1.8.1',
+    values: {
+      clusterName: eksCluster.name,
+      region: regionId,
+      vpcId: vpc.id,
+      serviceAccount: {
+        create: true,
+        name: 'aws-load-balancer-controller',
+      },
+    },
+  },
+  { provider },
+)
+
 // === EKS === Gateway API ===
 
 const gatewayAPI = new k8s.yaml.ConfigFile(
@@ -256,7 +311,7 @@ const cilium = new k8s.helm.v3.Release(
     name: 'cilium',
     chart: 'cilium',
     namespace: 'kube-system',
-    version: '1.15.5',
+    version: '1.15.6',
     repositoryOpts: {
       repo: 'https://helm.cilium.io',
     },
@@ -266,7 +321,8 @@ const cilium = new k8s.helm.v3.Release(
       k8sServiceHost: cluster.endpoint.apply((endpoint) => endpoint.replace('https://', '')),
       resources: {
         requests: {
-          memory: '128Mi',
+          cpu: '100m',
+          memory: '256Mi',
         },
         limits: {
           memory: '512Mi',
@@ -324,7 +380,15 @@ const cilium = new k8s.helm.v3.Release(
       envoy: {
         rollOutPods: true,
         enabled: true,
-        resources: config.defaults.pod.resources,
+        resources: {
+          requests: {
+            cpu: '50m',
+            memory: '128Mi',
+          },
+          limits: {
+            memory: '256Mi',
+          },
+        },
       },
       routingMode: 'native',
       bpf: {
@@ -342,7 +406,7 @@ const cilium = new k8s.helm.v3.Release(
   { provider, dependsOn: [gatewayAPI] },
 )
 
-// === EKS === Addons === CoreDNS ===
+// === EKS === CoreDNS ===
 
 new aws.eks.Addon(nm('coredns'), {
   addonName: 'coredns',
@@ -914,10 +978,6 @@ const karpenterControllerPolicy = ({
     ],
   })
 
-const partitionId = await aws.getPartition().then((partition) => partition.id)
-const regionId = await aws.getRegion().then((region) => region.id)
-const accountId = await aws.getCallerIdentity().then((identity) => identity.accountId)
-
 const karpenterControllerPolicyName = nm('karpenter-controller-policy')
 const KarpenterControllerPolicy = new aws.iam.Policy(karpenterControllerPolicyName, {
   policy: pulumi.all([eksCluster.name, EC2InterruptionQueue.name, eksInstanceRole.name]).apply(
@@ -968,6 +1028,8 @@ const karpenter = new k8s.helm.v3.Release(
     namespace: karpenterCRD.namespace,
     version: karpenterCRD.version,
     values: {
+      // TODO: increase to 2 replicas after managed node group issues are resolved
+      replicas: 1,
       settings: {
         clusterName: eksCluster.name,
         interruptionQueue: EC2InterruptionQueue.name,
@@ -1037,7 +1099,7 @@ new k8s.apiextensions.CustomResource(
             {
               key: 'kubernetes.io/arch',
               operator: 'In',
-              values: ['arm64'],
+              values: ['arm64', 'amd64'],
             },
             {
               key: 'kubernetes.io/os',
@@ -1049,6 +1111,11 @@ new k8s.apiextensions.CustomResource(
               operator: 'In',
               values: ['spot', 'on-demand'],
             },
+            {
+              key: 'karpenter.k8s.aws/instance-hypervisor',
+              operator: 'In',
+              values: ['nitro'],
+            },
           ],
           nodeClassRef: {
             apiVersion: 'karpenter.k8s.aws/v1beta1',
@@ -1056,8 +1123,8 @@ new k8s.apiextensions.CustomResource(
             name: defaultNodeClass.metadata.name,
           },
           kubelet: {
-            podsPerCore: 20,
-            maxPods: 110,
+            podsPerCore: 40,
+            maxPods: 220,
           },
           startupTaints: [
             {
@@ -1407,20 +1474,15 @@ const metricsServer = new k8s.helm.v3.Release(
       repo: 'https://kubernetes-sigs.github.io/metrics-server/',
     },
     values: {
-      resources: {
-        requests: {
-          memory: '64Mi',
-        },
-        limits: {
-          memory: '256Mi',
-        },
-      },
+      resources: config.defaults.pod.resources,
     },
   },
   { provider },
 )
 
 // === EKS === Monitoring === Kube Prometheus Stack ===
+
+// TODO: enable monitoring for all deployments
 
 const kubePrometheusStack = new k8s.helm.v3.Release(
   nm('kube-prometheus-stack'),
@@ -1571,7 +1633,7 @@ const loki = new k8s.helm.v3.Release(
     },
     values: {
       chunksCache: {
-        allocatedMemory: '1024',
+        allocatedMemory: '512',
         writebackSizeLimit: '64MB',
       },
       resultsCache: {
@@ -1724,6 +1786,7 @@ const argocd = new k8s.helm.v3.Release(
       controller: {
         resources: {
           requests: {
+            cpu: '100m',
             memory: '512Mi',
           },
           limits: {
@@ -1861,9 +1924,10 @@ function registerHelmRelease(release: k8s.helm.v3.Release, project: string) {
   eso,
   kyverno,
   argocd,
-  // TODO: enable cilium
+  // TODO: configure argocd to play nicely with cilium
   // NOTE: https://docs.cilium.io/en/latest/configuration/argocd-issues/
-  // cilium,
+  cilium,
+  loadBalancerController,
 ].forEach((release) => registerHelmRelease(release, project))
 
 // === Exports ===

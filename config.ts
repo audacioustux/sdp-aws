@@ -24,7 +24,7 @@ const defaults = {
   pod: {
     resources: {
       requests: {
-        cpu: '50m',
+        cpu: '20m',
         memory: '64Mi',
       },
       limits: {
@@ -34,6 +34,6 @@ const defaults = {
   },
 }
 
-// TODO: move all hardcoded versions to this file
+// TODO: move hard-coded configs in index.ts to here
 
 export { git, pulumi, grafana, defaults }
