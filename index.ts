@@ -249,50 +249,6 @@ const kubeSystemLimitRange = new k8s.core.v1.LimitRange(
   { provider },
 )
 
-// === EKS === Load Balancer Controller ===
-
-const loadBalancerControllerPolicy = new aws.iam.Policy(nm('load-balancer-controller-policy'), {
-  policy: await fetch(
-    'https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.7.2/docs/install/iam_policy.json',
-  ).then((res) => res.json()),
-})
-const loadBalancerControllerRoleName = nm('load-balancer-controller-role')
-const loadBalancerControllerRole = new aws.iam.Role(loadBalancerControllerRoleName, {
-  assumeRolePolicy: assumeRoleForEKSPodIdentity(),
-})
-const loadBalancerControllerRolePolicyAttachment = new aws.iam.RolePolicyAttachment(loadBalancerControllerRoleName, {
-  policyArn: loadBalancerControllerPolicy.arn,
-  role: loadBalancerControllerRole,
-})
-new aws.eks.PodIdentityAssociation(nm('load-balancer-controller-pod-identity'), {
-  clusterName: eksCluster.name,
-  namespace: 'kube-system',
-  serviceAccount: 'aws-load-balancer-controller',
-  roleArn: loadBalancerControllerRole.arn,
-})
-const loadBalancerController = new k8s.helm.v3.Release(
-  nm('load-balancer-controller'),
-  {
-    name: 'aws-load-balancer-controller',
-    chart: 'aws-load-balancer-controller',
-    namespace: 'kube-system',
-    repositoryOpts: {
-      repo: 'https://aws.github.io/eks-charts',
-    },
-    version: '1.8.1',
-    values: {
-      clusterName: eksCluster.name,
-      region: regionId,
-      vpcId: vpc.id,
-      serviceAccount: {
-        create: true,
-        name: 'aws-load-balancer-controller',
-      },
-    },
-  },
-  { provider },
-)
-
 // === EKS === Gateway API ===
 
 const gatewayAPI = new k8s.yaml.ConfigFile(
@@ -321,7 +277,6 @@ const cilium = new k8s.helm.v3.Release(
       k8sServiceHost: cluster.endpoint.apply((endpoint) => endpoint.replace('https://', '')),
       resources: {
         requests: {
-          cpu: '100m',
           memory: '256Mi',
         },
         limits: {
@@ -375,19 +330,6 @@ const cilium = new k8s.helm.v3.Release(
         acceleration: 'best-effort',
         l7: {
           backend: 'envoy',
-        },
-      },
-      envoy: {
-        rollOutPods: true,
-        enabled: true,
-        resources: {
-          requests: {
-            cpu: '50m',
-            memory: '128Mi',
-          },
-          limits: {
-            memory: '256Mi',
-          },
         },
       },
       routingMode: 'native',
@@ -1786,7 +1728,6 @@ const argocd = new k8s.helm.v3.Release(
       controller: {
         resources: {
           requests: {
-            cpu: '100m',
             memory: '512Mi',
           },
           limits: {
@@ -1927,7 +1868,6 @@ function registerHelmRelease(release: k8s.helm.v3.Release, project: string) {
   // TODO: configure argocd to play nicely with cilium
   // NOTE: https://docs.cilium.io/en/latest/configuration/argocd-issues/
   cilium,
-  loadBalancerController,
 ].forEach((release) => registerHelmRelease(release, project))
 
 // === Exports ===
