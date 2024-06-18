@@ -1514,6 +1514,7 @@ const kubePrometheusStack = new k8s.helm.v3.Release(
         },
         dashboards: {
           karpenter: {
+            // TODO: move the dashboard to a local file, as the content may change
             'karperter-capacity': {
               url: 'https://karpenter.sh/preview/getting-started/getting-started-with-karpenter/karpenter-capacity-dashboard.json',
             },
