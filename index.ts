@@ -36,7 +36,6 @@ const vpc = new aws.ec2.Vpc(vpcName, {
 
 // === VPC === Subnets ===
 
-// take the first two availability zones
 const availabilityZones = await aws.getAvailabilityZones({
   state: 'available',
 })

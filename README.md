@@ -6,7 +6,7 @@
 
 ### Components
 
-- **Cilium**: for l3, l4, l7, and network policy enforcement. with Hubble, XDP, kube-proxy replacement, vpc-cni replacement, and more.
+- **Cilium**: for l3, l4, l7, and network policy enforcement - with Hubble, XDP, kube-proxy & vpc-cni replacement.
 - **ExternalDNS**: for managing Route53 records.
 - **ExternalSecrets**: for managing secrets from AWS Secrets Manager.
 - **ArgoCD**: for GitOps and Self-healing for the other components.
