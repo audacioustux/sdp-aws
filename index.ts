@@ -1134,6 +1134,8 @@ const kyverno = new k8s.helm.v3.Release(
 //   { provider },
 // )
 
+// TODO: Use more secure SecurityContext
+
 // === EKS === Limit Range === All Namespaces ===
 
 new k8s.apiextensions.CustomResource(
