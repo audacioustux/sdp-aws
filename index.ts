@@ -543,7 +543,19 @@ new aws.eks.Addon(nm('s3-mountpoint-driver'), {
 
 // === EKS === Addons === Snapshot Controller ===
 
-const snapshotControllerRoleName = nm('snapshot-controller-irsa')
+new aws.eks.Addon(nm('snapshot-controller'), {
+  addonName: 'snapshot-controller',
+  clusterName: eksCluster.name,
+  addonVersion: eksCluster.version.apply(
+    async (kubernetesVersion) =>
+      await aws.eks.getAddonVersion({
+        addonName: 'snapshot-controller',
+        kubernetesVersion,
+        mostRecent: true,
+      }),
+  ).version,
+  resolveConflictsOnUpdate: 'OVERWRITE',
+})
 
 // === EC2 === Interruption Queue ===
 
@@ -1066,7 +1078,7 @@ new k8s.apiextensions.CustomResource(
           },
           kubelet: {
             podsPerCore: 40,
-            maxPods: 220,
+            maxPods: 160,
           },
           startupTaints: [
             {
@@ -1728,7 +1740,7 @@ const argocd = new k8s.helm.v3.Release(
       controller: {
         resources: {
           requests: {
-            memory: '512Mi',
+            memory: '1Gi',
           },
           limits: {
             memory: '2Gi',

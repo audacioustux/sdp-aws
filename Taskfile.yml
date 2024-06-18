@@ -29,7 +29,6 @@ tasks:
   aws:login: aws configure sso --profile default
   ecr:login: aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin 343301376154.dkr.ecr.ap-south-1.amazonaws.com
   kubeconfig:update:
-    dir: aws
     cmd: mkdir -p ~/.kube && pulumi stack -s prod output kubeconfig > ~/.kube/config
     generates: [~/.kube/config]
   argocd:password:
