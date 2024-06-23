@@ -48,3 +48,4 @@ tasks:
   k9s: 
     deps: [kubeconfig:update]
     cmd: k9s -A --headless --crumbsless
+  

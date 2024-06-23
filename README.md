@@ -1,8 +1,8 @@
 # SDP AWS
 
-## Overview
-
 **[READ THE BLOG for details](https://audacioustux.com/A-comprehensive-roadmap-to-Kubernetes-on-AWS-08fd3b83ff5f4d968629c8b546fdb5aa?pvs=4)**
+
+## Overview
 
 ![Ref Arch - Draft](misc/draft-reference-arch.svg)
 
