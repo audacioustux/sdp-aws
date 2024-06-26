@@ -260,6 +260,8 @@ const gatewayAPI = new k8s.yaml.ConfigFile(
 
 // === EKS === Cilium ===
 
+// TODO: enable envoy slow start
+// NOTO: https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/load_balancing/slow_start
 const cilium = new k8s.helm.v3.Release(
   nm('cilium'),
   {
@@ -1094,7 +1096,7 @@ new k8s.apiextensions.CustomResource(
       },
       disruption: {
         consolidationPolicy: 'WhenUnderutilized',
-        expireAfter: `${24 * 30}h`,
+        expireAfter: `${24 * 7}h`,
       },
     },
   },
@@ -1725,7 +1727,7 @@ const argocd = new k8s.helm.v3.Release(
     name: 'argocd',
     chart: 'argo-cd',
     namespace: argocdNamespace.metadata.name,
-    version: '7.1.3',
+    version: '7.3.1',
     repositoryOpts: {
       repo: 'https://argoproj.github.io/argo-helm',
     },
@@ -1890,4 +1892,4 @@ export const clusterSecretStores = {
   aws: clusterSecretStoreAWS,
 }
 
-export { kubeconfig, publicRouteTable, privateRouteTable, vpc, eksCluster }
+export { kubeconfig, publicRouteTable, privateRouteTable, vpc, eksCluster, kmsKey }

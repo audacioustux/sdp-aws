@@ -1,0 +1,43 @@
+config:
+  dbDriver: mysql
+  defaultDomain: "sl.example.com"
+  isHttpsEnabled: "true"
+kubernetesClusterDomain: cluster.local
+secret:
+  geoliteLicenseKey: ""
+  initialApiKey: ""
+server:
+  ports:
+  - port: 80
+    protocol: TCP
+    targetPort: http
+  type: ClusterIP
+shlink:
+  replicas: 1
+  revisionHistoryLimit: 5
+  shlinkServer:
+    image:
+      repository: shlinkio/shlink
+      tag: "4.1"
+    resources:
+      limits:
+        memory: 512Mi
+      requests:
+        cpu: 200m
+        memory: 256Mi
+webClient:
+  ports:
+  - port: 80
+    protocol: TCP
+    targetPort: http
+  shlinkWebClient:
+    image:
+      repository: shlinkio/shlink-web-client
+      tag: "4.1"
+    resources:
+      limits:
+        memory: 128Mi
+      requests:
+        cpu: 20m
+        memory: 64Mi
+  type: ClusterIP

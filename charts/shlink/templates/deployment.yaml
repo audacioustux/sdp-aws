@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "shlink.fullname" . }}-shlink
+  labels:
+    app: shlink
+  {{- include "shlink.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.shlink.replicas }}
+  revisionHistoryLimit: {{ .Values.shlink.revisionHistoryLimit }}
+  selector:
+    matchLabels:
+      app: shlink
+    {{- include "shlink.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        app: shlink
+      {{- include "shlink.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+      - env:
+        - name: KUBERNETES_CLUSTER_DOMAIN
+          value: {{ quote .Values.kubernetesClusterDomain }}
+        envFrom:
+        - configMapRef:
+            name: {{ include "shlink.fullname" . }}-config
+        - secretRef:
+            name: {{ include "shlink.fullname" . }}-secret
+        image: {{ .Values.shlink.shlinkServer.image.repository }}:{{ .Values.shlink.shlinkServer.image.tag | default .Chart.AppVersion }}
+        livenessProbe:
+          httpGet:
+            path: /rest/health
+            port: http
+        name: shlink-server
+        ports:
+        - containerPort: 8080
+          name: http
+        readinessProbe:
+          httpGet:
+            path: /rest/health
+            port: http
+        resources: {{- toYaml .Values.shlink.shlinkServer.resources | nindent 10 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "shlink.fullname" . }}-web-client
+  labels:
+    app: shlink-web-client
+  {{- include "shlink.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app: shlink-web-client
+    {{- include "shlink.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        app: shlink-web-client
+      {{- include "shlink.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+      - env:
+        - name: KUBERNETES_CLUSTER_DOMAIN
+          value: {{ quote .Values.kubernetesClusterDomain }}
+        image: {{ .Values.webClient.shlinkWebClient.image.repository }}:{{ .Values.webClient.shlinkWebClient.image.tag | default .Chart.AppVersion }}
+        name: shlink-web-client
+        ports:
+        - containerPort: 8080
+          name: http
+        readinessProbe:
+          httpGet:
+            path: /
+            port: http
+        resources: {{- toYaml .Values.webClient.shlinkWebClient.resources | nindent 10 }}
