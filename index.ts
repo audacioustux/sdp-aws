@@ -1103,56 +1103,6 @@ new k8s.apiextensions.CustomResource(
   { provider, dependsOn: [karpenter] },
 )
 
-new k8s.apiextensions.CustomResource(
-  nm('t4g-small-node-pool'),
-  {
-    apiVersion: 'karpenter.sh/v1beta1',
-    kind: 'NodePool',
-    metadata: {
-      name: 't4g-small',
-    },
-    spec: {
-      template: {
-        spec: {
-          requirements: [
-            {
-              key: 'karpenter.sh/capacity-type',
-              operator: 'In',
-              values: ['on-demand'],
-            },
-            {
-              key: 'node.kubernetes.io/instance-type',
-              operator: 'In',
-              values: ['t4g.small'],
-            },
-          ],
-          nodeClassRef: {
-            apiVersion: 'karpenter.k8s.aws/v1beta1',
-            kind: 'EC2NodeClass',
-            name: defaultNodeClass.metadata.name,
-          },
-          kubelet: {
-            podsPerCore: 40,
-            maxPods: 160,
-          },
-          startupTaints: [
-            {
-              key: 'node.cilium.io/agent-not-ready',
-              value: 'true',
-              effect: 'NoExecute',
-            },
-          ],
-        },
-      },
-      limits: {
-        cpu: '2',
-      },
-      weight: 100,
-    },
-  },
-  { provider, dependsOn: [karpenter] },
-)
-
 // === EKS === Kyverno ===
 
 const kyverno = new k8s.helm.v3.Release(
