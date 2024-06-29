@@ -1103,19 +1103,36 @@ new k8s.apiextensions.CustomResource(
   { provider, dependsOn: [karpenter] },
 )
 
+// === EKS === Vertical Pod Autoscaler ===
+
+const vpaNamespace = new k8s.core.v1.Namespace(nm('vpa'), { metadata: { name: 'vpa' } }, { provider })
+const vpa = new k8s.helm.v3.Release(
+  nm('vertical-pod-autoscaler'),
+  {
+    name: 'vertical-pod-autoscaler',
+    chart: 'vertical-pod-autoscaler',
+    version: '9.8.2',
+    namespace: vpaNamespace.metadata.name,
+    repositoryOpts: {
+      repo: 'https://cowboysysop.github.io/charts/',
+    },
+  },
+  { provider },
+)
+
 // === EKS === Kyverno ===
 
+const kyvernoNamespace = new k8s.core.v1.Namespace(nm('kyverno'), { metadata: { name: 'kyverno' } }, { provider })
 const kyverno = new k8s.helm.v3.Release(
   nm('kyverno'),
   {
     name: 'kyverno',
     chart: 'kyverno',
     version: '3.2.4',
-    namespace: 'kyverno',
+    namespace: kyvernoNamespace.metadata.name,
     repositoryOpts: {
       repo: 'https://kyverno.github.io/kyverno/',
     },
-    createNamespace: true,
   },
   { provider },
 )
@@ -1879,6 +1896,7 @@ function registerHelmRelease(release: k8s.helm.v3.Release, project: string) {
   loki,
   promtail,
   eso,
+  vpa,
   kyverno,
   argocd,
   // TODO: configure argocd to play nicely with cilium
