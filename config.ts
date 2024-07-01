@@ -34,6 +34,12 @@ const defaults = {
   },
 }
 
+const argocdConfig = new Config('argocd')
+const argocd = {
+  host: argocdConfig.requireSecret('host'),
+  password: argocdConfig.requireSecret('password'),
+}
+
 // TODO: move hard-coded configs in index.ts to here
 
-export { git, pulumi, grafana, defaults }
+export { git, pulumi, grafana, defaults, argocd }

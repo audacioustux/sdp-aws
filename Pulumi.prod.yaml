@@ -1,11 +1,15 @@
 config:
+  argocd:host:
+    secure: AAABAI1skOAvsnNFYAtAW6tKefdBUvRxtMFUvy7gEqVRoVvbP256n27tIpb4r9cRfmknCNw=
+  argocd:password:
+    secure: AAABAJE6EXMgEaokIJrqPbg4LzpBuoOHUb5IwRQY36K/A00tf9OgafninH/P+fuS
   aws:region: ap-south-1
   git:password:
     secure: AAABAMA8s6xPPlvbbNtVcQNoYfCsIdA4Y2jFgB67F0iNcq8gQn7WCow0U4cHMQrraO7aqIJJJhotfzWqbXSeEEC6+gEmI5xxrNOp5uGfqzJ22lrplqGhbVcNSfg/46viq5yFzczaYRRjdtKfzaNXyyy58V6X20pfUI7Yy44=
-  git:path: sdp
+  git:path: .
   git:repo: https://github.com/audacioustux/sdp-aws
   git:username: audacioustux
   grafana:host:
-    secure: AAABAFCImWELiim1SyDjCJJiKPbs6+u38cDH1pZypGNFlbZNb0+5X84lOjRfT4FiYEzdCszLSPh/fg==
+    secure: AAABAI2hhmz/mwlV57FW3hE6dNDbuaHkl79OPpuNqLy9YOfCLBxFBwqBUsi4xW2eaDnyBTw=
   grafana:password:
     secure: AAABAPtcdlF9OpVDe4tmiRhQduEKB/bWf3MTnse4wWI3MdsO3343wgxOUtvW6+Wm

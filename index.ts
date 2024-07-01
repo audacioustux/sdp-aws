@@ -5,6 +5,7 @@ import * as k8s from '@pulumi/kubernetes'
 import { registerAutoTags } from './utils/autoTag.ts'
 import * as config from './config.ts'
 import { assumeRoleForEKSPodIdentity } from './utils/policyStatement.ts'
+import * as bcrypt from 'bcrypt'
 
 const partitionId = await aws.getPartition().then((partition) => partition.id)
 const regionId = await aws.getRegion().then((region) => region.id)
@@ -140,6 +141,16 @@ privateSubnets.map((subnet, index) => {
     },
     { parent: privateRouteTable },
   )
+})
+
+// === VPC === S3 Access Endpoint ===
+
+const s3EndpointName = nm('s3-endpoint')
+new aws.ec2.VpcEndpoint(s3EndpointName, {
+  vpcId: vpc.id,
+  serviceName: `com.amazonaws.${regionId}.s3`,
+  routeTableIds: [publicRouteTable.id, privateRouteTable.id],
+  vpcEndpointType: 'Gateway',
 })
 
 // === KMS ===
@@ -1456,8 +1467,48 @@ const metricsServer = new k8s.helm.v3.Release(
 
 // === EKS === Monitoring === Kube Prometheus Stack ===
 
-// TODO: enable monitoring for all deployments
+const thanosBucketName = nmo('thanos-bucket')
+const thanosBucket = new aws.s3.Bucket(thanosBucketName, {
+  bucket: thanosBucketName,
+  acl: 'private',
+  serverSideEncryptionConfiguration: {
+    rule: {
+      applyServerSideEncryptionByDefault: {
+        sseAlgorithm: 'AES256',
+      },
+    },
+  },
+})
+const thanosUser = new aws.iam.User(nm('thanos-user'))
+const thanosAccessKey = new aws.iam.AccessKey(nm('thanos-access-key'), {
+  user: thanosUser.name,
+})
+const thanosS3AccessPolicy = new aws.iam.Policy(nm('thanos-policy'), {
+  policy: thanosBucket.arn.apply((bucket) =>
+    aws.iam
+      .getPolicyDocument({
+        statements: [
+          {
+            effect: 'Allow',
+            actions: ['s3:ListBucket'],
+            resources: [bucket],
+          },
+          {
+            effect: 'Allow',
+            actions: ['s3:GetObject', 's3:PutObject', 's3:DeleteObject'],
+            resources: [`${bucket}/*`],
+          },
+        ],
+      })
+      .then((doc) => doc.json),
+  ),
+})
+new aws.iam.UserPolicyAttachment(nm('thanos-user-policy'), {
+  policyArn: thanosS3AccessPolicy.arn,
+  user: thanosUser,
+})
 
+// TODO: enable monitoring for all deployments
 const kubePrometheusStack = new k8s.helm.v3.Release(
   nm('kube-prometheus-stack'),
   {
@@ -1473,12 +1524,31 @@ const kubePrometheusStack = new k8s.helm.v3.Release(
         prometheusSpec: {
           serviceMonitorSelectorNilUsesHelmValues: false,
           podMonitorSelectorNilUsesHelmValues: false,
+          ruleSelectorNilUsesHelmValues: false,
+          probeSelectorNilUsesHelmValues: false,
+          replicas: 1,
+          retention: '3d',
+          retentionSize: '2GiB',
           resources: {
             requests: {
               memory: '1Gi',
             },
             limits: {
               memory: '2Gi',
+            },
+          },
+          thanos: {
+            objectStorageConfig: {
+              secret: {
+                type: 'S3',
+                config: {
+                  bucket: thanosBucket.bucket,
+                  endpoint: 's3.amazonaws.com',
+                  region: regionId,
+                  access_key: thanosAccessKey.id,
+                  secret_key: thanosAccessKey.secret,
+                },
+              },
             },
           },
         },
@@ -1488,6 +1558,9 @@ const kubePrometheusStack = new k8s.helm.v3.Release(
           certManager: {
             enabled: true,
           },
+        },
+        verticalPodAutoscaler: {
+          enabled: true,
         },
       },
       grafana: {
@@ -1550,41 +1623,45 @@ const kubePrometheusStack = new k8s.helm.v3.Release(
 
 // === EKS === Monitoring === Loki ===
 
-const lokiBuckets = ['chunks', 'ruler', 'admin']
-const lokiBucketsEntries = lokiBuckets.map((lokiBucket) => {
-  const bucket = nmo(`loki-${lokiBucket}`)
-  new aws.s3.Bucket(bucket, {
-    bucket,
-    acl: 'private',
-    serverSideEncryptionConfiguration: {
-      rule: {
-        applyServerSideEncryptionByDefault: {
-          sseAlgorithm: 'AES256',
+const lokiBuckets = ['chunks', 'ruler', 'admin'].reduce(
+  (acc, lokiBucketName) => ({
+    ...acc,
+    [lokiBucketName]: new aws.s3.Bucket(nmo(`loki-${lokiBucketName}`), {
+      bucket: nmo(`loki-${lokiBucketName}`),
+      acl: 'private',
+      serverSideEncryptionConfiguration: {
+        rule: {
+          applyServerSideEncryptionByDefault: {
+            sseAlgorithm: 'AES256',
+          },
         },
       },
-    },
-  })
-  return [lokiBucket, bucket]
-})
+    }),
+  }),
+  {} as Record<string, aws.s3.Bucket>,
+)
+export const lokiBucketsMap = Object.fromEntries(
+  Object.entries(lokiBuckets).map(([lokiBucketName, { bucket }]) => [lokiBucketName, bucket]),
+)
 
 const lokiUser = new aws.iam.User(nm('loki-user'))
 const lokiAccessKey = new aws.iam.AccessKey(nm('loki-access-key'), {
   user: lokiUser.name,
 })
 const lokiS3AccessPolicy = new aws.iam.Policy(nm('loki-policy'), {
-  policy: pulumi.all(lokiBucketsEntries).apply((buckets) =>
+  policy: pulumi.all(Object.values(lokiBucketsMap)).apply((buckets) =>
     aws.iam
       .getPolicyDocument({
         statements: [
           {
             effect: 'Allow',
             actions: ['s3:ListBucket'],
-            resources: buckets.map(([, bucket]) => `arn:aws:s3:::${bucket}`),
+            resources: buckets.map((bucket) => `arn:aws:s3:::${bucket}`),
           },
           {
             effect: 'Allow',
             actions: ['s3:GetObject', 's3:PutObject', 's3:DeleteObject'],
-            resources: buckets.map(([, bucket]) => `arn:aws:s3:::${bucket}/*`),
+            resources: buckets.map((bucket) => `arn:aws:s3:::${bucket}/*`),
           },
         ],
       })
@@ -1601,7 +1678,7 @@ const loki = new k8s.helm.v3.Release(
   {
     name: 'loki',
     chart: 'loki',
-    version: '6.6.2',
+    version: '6.6.4',
     namespace: 'monitoring',
     repositoryOpts: {
       repo: 'https://grafana.github.io/helm-charts',
@@ -1618,20 +1695,20 @@ const loki = new k8s.helm.v3.Release(
       write: {
         resources: {
           requests: {
-            memory: '128Mi',
+            memory: '256Mi',
           },
           limits: {
-            memory: '512Mi',
+            memory: '1Gi',
           },
         },
       },
       read: {
         resources: {
           requests: {
-            memory: '128Mi',
+            memory: '256Mi',
           },
           limits: {
-            memory: '512Mi',
+            memory: '1Gi',
           },
         },
       },
@@ -1664,7 +1741,7 @@ const loki = new k8s.helm.v3.Release(
             s3ForcePathStyle: false,
             insecure: false,
           },
-          bucketNames: Object.fromEntries(lokiBucketsEntries),
+          bucketNames: lokiBucketsMap,
         },
       },
     },
@@ -1750,12 +1827,32 @@ const argocd = new k8s.helm.v3.Release(
     },
     values: {
       configs: {
+        params: {
+          ['server.insecure']: true,
+        },
+        secret: {
+          argocdServerAdminPassword: config.argocd.password.apply((password) =>
+            bcrypt.hashSync(password, 10).replace('$2y$', '$2a$'),
+          ),
+        },
         repositories: {
           sdp: {
             url: config.git.repo,
             username: config.git.username,
             password: config.git.password,
           },
+        },
+      },
+      global: {
+        domain: config.argocd.host,
+      },
+      server: {
+        ingress: {
+          enabled: true,
+          annotations: {
+            'cert-manager.io/cluster-issuer': 'letsencrypt-prod-issuer',
+          },
+          tls: true,
         },
       },
       controller: {
@@ -1766,6 +1863,9 @@ const argocd = new k8s.helm.v3.Release(
           limits: {
             memory: '2Gi',
           },
+        },
+        metrics: {
+          enabled: true,
         },
       },
       repoServer: {
