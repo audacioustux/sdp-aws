@@ -5,7 +5,7 @@ import * as k8s from '@pulumi/kubernetes'
 import { registerAutoTags } from './utils/autoTag.ts'
 import * as config from './config.ts'
 import { assumeRoleForEKSPodIdentity } from './utils/policyStatement.ts'
-import * as bcrypt from 'bcrypt'
+import * as random from '@pulumi/random'
 
 const partitionId = await aws.getPartition().then((partition) => partition.id)
 const regionId = await aws.getRegion().then((region) => region.id)
@@ -1148,34 +1148,21 @@ const kyverno = new k8s.helm.v3.Release(
   { provider },
 )
 
-// TODO: Enable kyverno policies
-// new k8s.helm.v3.Release(
-//   nm('kyverno-policies'),
-//   {
-//     name: 'kyverno-policies',
-//     chart: 'kyverno-policies',
-//     version: '3.2.3 ',
-//     namespace: kyverno.namespace,
-//     repositoryOpts: {
-//       repo: 'https://kyverno.github.io/kyverno/',
-//     },
-//   },
-//   { provider },
-// )
-
-// TODO: Use more secure SecurityContext
+// TODO: Enable kyverno policies from https://github.com/kyverno/policies
+// TODO: Use a directory of policies to apply with ArgoCD
 
 // === EKS === Limit Range === All Namespaces ===
 
+const addNamespaceLimitRange = 'add-limit-range-to-namespaces'
 new k8s.apiextensions.CustomResource(
-  nm('add-ns-limit-range'),
+  nm(addNamespaceLimitRange),
   {
     apiVersion: 'kyverno.io/v1',
     kind: 'ClusterPolicy',
     metadata: {
-      name: 'add-ns-limit-range',
+      name: addNamespaceLimitRange,
       annotations: {
-        'policies.kyverno.io/title': 'Add LimitRange policy to all Namespaces',
+        'policies.kyverno.io/title': 'Add LimitRange for all Namespaces',
         'policies.kyverno.io/category': 'Other',
         'policies.kyverno.io/severity': 'medium',
         'kyverno.io/kyverno-version': kyverno.version,
@@ -1188,7 +1175,7 @@ new k8s.apiextensions.CustomResource(
       generateExisting: true,
       rules: [
         {
-          name: 'generate-ns-limit-range',
+          name: addNamespaceLimitRange,
           match: {
             resources: {
               kinds: ['Namespace'],
@@ -1202,6 +1189,73 @@ new k8s.apiextensions.CustomResource(
             synchronize: true,
             data: {
               spec: kubeSystemLimitRange.spec,
+            },
+          },
+        },
+      ],
+    },
+  },
+  { provider, dependsOn: [kyverno] },
+)
+
+// === EKS === Priority Class ===
+
+const platformPriorityClassBaseline = 1000_000_000 / 2
+
+// === EKS === Priority Class === All DaemonSets ===
+
+const allDaemonsetDefaultPriorityClass = 'all-daemonset-default'
+new k8s.scheduling.v1.PriorityClass(
+  nm(allDaemonsetDefaultPriorityClass),
+  {
+    metadata: {
+      name: allDaemonsetDefaultPriorityClass,
+    },
+    value: platformPriorityClassBaseline + 1000,
+    globalDefault: false,
+    description: 'Default priority class for DaemonSets',
+    preemptionPolicy: 'PreemptLowerPriority',
+  },
+  { provider },
+)
+
+const addDefaultDaemonsetPriorityClass = 'add-priority-class-to-daemonsets'
+new k8s.apiextensions.CustomResource(
+  nm(addDefaultDaemonsetPriorityClass),
+  {
+    apiVersion: 'kyverno.io/v1',
+    kind: 'ClusterPolicy',
+    metadata: {
+      name: addDefaultDaemonsetPriorityClass,
+      annotations: {
+        'policies.kyverno.io/title': 'Add PriorityClass to DaemonSets',
+        'policies.kyverno.io/category': 'Other',
+        'policies.kyverno.io/severity': 'medium',
+        'kyverno.io/kyverno-version': kyverno.version,
+        'kyverno.io/kubernetes-version': eksCluster.version,
+        'policies.kyverno.io/subject': 'PriorityClass',
+        'policies.kyverno.io/description': `DaemonSets are critical to the functioning of the cluster. This policy ensures that all DaemonSets have a PriorityClass set. This allows the DaemonSets to be rescheduled in the event of a node failure.`,
+      },
+    },
+    spec: {
+      rules: [
+        // patch all DaemonSets to set the priority class if not already set
+        {
+          name: addDefaultDaemonsetPriorityClass,
+          match: {
+            resources: {
+              kinds: ['DaemonSet'],
+            },
+          },
+          mutate: {
+            patchStrategicMerge: {
+              spec: {
+                template: {
+                  spec: {
+                    '+(priorityClassName)': allDaemonsetDefaultPriorityClass,
+                  },
+                },
+              },
             },
           },
         },
@@ -1438,6 +1492,126 @@ new aws.eks.PodIdentityAssociation(nm('cert-manager-dns01-pod-identity'), {
   roleArn: certManagerDns01Role.arn,
 })
 
+// === EKS === Cert Manager === Issuers ===
+
+const letsencryptProdIssuerName = 'letsencrypt-prod-issuer'
+new k8s.apiextensions.CustomResource(
+  letsencryptProdIssuerName,
+  {
+    apiVersion: 'cert-manager.io/v1',
+    kind: 'ClusterIssuer',
+    metadata: {
+      name: letsencryptProdIssuerName,
+    },
+    spec: {
+      acme: {
+        email: config.admin.email,
+        server: 'https://acme-v02.api.letsencrypt.org/directory',
+        privateKeySecretRef: {
+          name: 'letsencrypt-prod-issuer-account-key',
+        },
+        solvers: [
+          {
+            selector: {
+              dnsZones: config.route53.zones,
+            },
+            dns01: {
+              route53: {
+                region: config.route53.region,
+              },
+            },
+          },
+        ],
+      },
+    },
+  },
+  { provider },
+)
+
+const letsencryptStagingIssuerName = 'letsencrypt-staging-issuer'
+new k8s.apiextensions.CustomResource(
+  letsencryptStagingIssuerName,
+  {
+    apiVersion: 'cert-manager.io/v1',
+    kind: 'ClusterIssuer',
+    metadata: {
+      name: letsencryptStagingIssuerName,
+    },
+    spec: {
+      acme: {
+        email: config.admin.email,
+        server: 'https://acme-staging-v02.api.letsencrypt.org/directory',
+        privateKeySecretRef: {
+          name: 'letsencrypt-staging-issuer-account-key',
+        },
+        solvers: [
+          {
+            selector: {
+              dnsZones: config.route53.zones,
+            },
+            dns01: {
+              route53: {
+                region: config.route53.region,
+              },
+            },
+          },
+        ],
+      },
+    },
+  },
+  { provider },
+)
+
+const zerosslIssuerName = 'zerossl-issuer'
+const zerosslIssuer = new k8s.core.v1.Secret(
+  zerosslIssuerName,
+  {
+    metadata: {
+      name: zerosslIssuerName,
+      namespace: 'cert-manager',
+    },
+    stringData: {
+      secret: config.zerossl.hmac,
+    },
+  },
+  { provider },
+)
+new k8s.apiextensions.CustomResource(
+  zerosslIssuerName,
+  {
+    apiVersion: 'cert-manager.io/v1',
+    kind: 'ClusterIssuer',
+    metadata: {
+      name: zerosslIssuerName,
+    },
+    spec: {
+      acme: {
+        server: 'https://acme.zerossl.com/v2/DV90',
+        externalAccountBinding: {
+          keyID: config.zerossl.keyId,
+          keySecretRef: {
+            name: zerosslIssuer.metadata.name,
+            key: 'secret',
+          },
+        },
+        privateKeySecretRef: {
+          name: 'zerossl-issuer-account-key',
+        },
+        solvers: [
+          {
+            dns01: {
+              route53: {
+                region: config.route53.region,
+              },
+            },
+          },
+        ],
+      },
+    },
+  },
+  { provider },
+)
+
 // === EKS === Monitoring ===
 
 const monitoringNamespace = new k8s.core.v1.Namespace(
@@ -1509,6 +1683,11 @@ new aws.iam.UserPolicyAttachment(nm('thanos-user-policy'), {
 })
 
 // TODO: enable monitoring for all deployments
+
+const grafanaPassword = new random.RandomPassword(nm('grafana-password'), {
+  length: 32,
+  special: true,
+})
 const kubePrometheusStack = new k8s.helm.v3.Release(
   nm('kube-prometheus-stack'),
   {
@@ -1527,14 +1706,29 @@ const kubePrometheusStack = new k8s.helm.v3.Release(
           ruleSelectorNilUsesHelmValues: false,
           probeSelectorNilUsesHelmValues: false,
           replicas: 1,
-          retention: '3d',
-          retentionSize: '2GiB',
           resources: {
             requests: {
               memory: '1Gi',
             },
             limits: {
               memory: '2Gi',
+            },
+          },
+          retention: '7d',
+          retentionSize: '10GiB',
+          storageSpec: {
+            volumeClaimTemplate: {
+              metadata: {
+                name: 'prometheus-storage',
+              },
+              spec: {
+                accessModes: ['ReadWriteOnce'],
+                resources: {
+                  requests: {
+                    storage: '12Gi',
+                  },
+                },
+              },
             },
           },
           thanos: {
@@ -1552,6 +1746,12 @@ const kubePrometheusStack = new k8s.helm.v3.Release(
             },
           },
         },
+        thanosService: {
+          enabled: true,
+        },
+        thanosServiceMonitor: {
+          enabled: true,
+        },
       },
       prometheusOperator: {
         admissionWebhooks: {
@@ -1563,11 +1763,27 @@ const kubePrometheusStack = new k8s.helm.v3.Release(
           enabled: true,
         },
       },
+      alertmanager: {
+        alertmanagerSpec: {
+          storage: {
+            volumeClaimTemplate: {
+              spec: {
+                accessModes: ['ReadWriteOnce'],
+                resources: {
+                  requests: {
+                    storage: '1Gi',
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
       grafana: {
         persistence: {
           enabled: true,
         },
-        adminPassword: config.grafana.password,
+        adminPassword: grafanaPassword.result,
         'grafana.ini': {
           users: {
             viewers_can_edit: true,
@@ -1586,6 +1802,7 @@ const kubePrometheusStack = new k8s.helm.v3.Release(
             },
           ],
         },
+        defaultDashboardsEditable: false,
         dashboardProviders: {
           'dashboardproviders.yaml': {
             apiVersion: 1,
@@ -1814,6 +2031,10 @@ new k8s.storage.v1.StorageClass(
 
 // === EKS === ArgoCD ===
 
+const argocdPassword = new random.RandomPassword(nm('argocd-password'), {
+  length: 32,
+  special: true,
+})
 const argocdNamespace = new k8s.core.v1.Namespace(nm('argocd'), { metadata: { name: 'argocd' } }, { provider })
 const argocd = new k8s.helm.v3.Release(
   nm('argocd'),
@@ -1821,7 +2042,7 @@ const argocd = new k8s.helm.v3.Release(
     name: 'argocd',
     chart: 'argo-cd',
     namespace: argocdNamespace.metadata.name,
-    version: '7.3.1',
+    version: '7.3.3',
     repositoryOpts: {
       repo: 'https://argoproj.github.io/argo-helm',
     },
@@ -1831,9 +2052,7 @@ const argocd = new k8s.helm.v3.Release(
           ['server.insecure']: true,
         },
         secret: {
-          argocdServerAdminPassword: config.argocd.password.apply((password) =>
-            bcrypt.hashSync(password, 10).replace('$2y$', '$2a$'),
-          ),
+          argocdServerAdminPassword: argocdPassword.bcryptHash,
         },
         repositories: {
           sdp: {
@@ -1949,6 +2168,9 @@ function registerHelmRelease(release: k8s.helm.v3.Release, project: string) {
         metadata: {
           name,
           namespace: 'argocd',
+          annotations: {
+            'argocd.argoproj.io/compare-options': 'ServerSideDiff=true,IncludeMutationWebhook=true',
+          },
           // no finalizers, only pulumi will manage deletion
         },
         spec: {
@@ -1978,7 +2200,7 @@ function registerHelmRelease(release: k8s.helm.v3.Release, project: string) {
                 maxDuration: '5m',
               },
             },
-            syncOptions: ['PruneLast=true', 'ApplyOutOfSyncOnly=true'],
+            syncOptions: ['PruneLast=true', 'ApplyOutOfSyncOnly=true', 'ServerSideApply=true'],
           },
         },
       },
@@ -2006,8 +2228,15 @@ function registerHelmRelease(release: k8s.helm.v3.Release, project: string) {
 
 // === Exports ===
 
+// TODO: organize exports
+
 export const clusterSecretStores = {
   aws: clusterSecretStoreAWS,
 }
+export const clusterIssuer = {
+  letsencryptProd: letsencryptProdIssuerName,
+  letsencryptStaging: letsencryptStagingIssuerName,
+  zerossl: zerosslIssuerName,
+}
 
-export { kubeconfig, publicRouteTable, privateRouteTable, vpc, eksCluster, kmsKey }
+export { kubeconfig, publicRouteTable, privateRouteTable, vpc, eksCluster, kmsKey, argocdPassword, grafanaPassword }

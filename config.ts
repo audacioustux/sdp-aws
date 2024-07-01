@@ -14,12 +14,6 @@ const git = {
   password: gitConfig.requireSecret('password'),
 }
 
-const grafanaConfig = new Config('grafana')
-const grafana = {
-  password: grafanaConfig.requireSecret('password'),
-  host: grafanaConfig.requireSecret('host'),
-}
-
 const defaults = {
   pod: {
     resources: {
@@ -34,12 +28,33 @@ const defaults = {
   },
 }
 
+const grafanaConfig = new Config('grafana')
+const grafana = {
+  host: grafanaConfig.require('host'),
+}
+
 const argocdConfig = new Config('argocd')
 const argocd = {
-  host: argocdConfig.requireSecret('host'),
-  password: argocdConfig.requireSecret('password'),
+  host: argocdConfig.require('host'),
+}
+
+const adminConfig = new Config('admin')
+const admin = {
+  email: adminConfig.require('email'),
+}
+
+const route53Config = new Config('route53')
+const route53 = {
+  zones: route53Config.requireObject<string[]>('zones'),
+  region: route53Config.require('region'),
+}
+
+const zerosslConfig = new Config('zerossl')
+const zerossl = {
+  keyId: zerosslConfig.require('kid'),
+  hmac: zerosslConfig.requireSecret('hmac'),
 }
 
 // TODO: move hard-coded configs in index.ts to here
 
-export { git, pulumi, grafana, defaults, argocd }
+export { git, pulumi, grafana, defaults, argocd, admin, route53, zerossl }
