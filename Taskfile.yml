@@ -1,6 +1,6 @@
 version: '3'
 
-dotenv: [".env"]
+dotenv: ['.env']
 
 tasks:
   pulumi:org:set-default:
@@ -9,7 +9,7 @@ tasks:
       - pulumi org set-default $PULUMI_DEFAULT_ORG
 
   deps:
-    deps: 
+    deps:
       - pulumi:org:set-default
     cmd: pulumi install
 
@@ -21,7 +21,7 @@ tasks:
     deps: [deps]
     env:
       PULUMI_K8S_ENABLE_SERVER_SIDE_APPLY: true
-      PULUMI_K8S_CLIENT_TIMEOUT: 90
+      PULUMI_K8S_CLIENT_TIMEOUT: 120
     cmd: pulumi up -s prod {{.CLI_ARGS}}
 
   # miscellanea
@@ -34,18 +34,17 @@ tasks:
   argocd:password:
     deps: [kubeconfig:update]
     cmd: kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d
-  argocd:ui: 
+  argocd:ui:
     deps: [kubeconfig:update]
-    cmds: 
+    cmds:
       - echo "ArgoCD password - $(task argocd:password)"
       - kubectl port-forward svc/argocd-server -n argocd 8080:443
   grafana:ui:
     deps: [kubeconfig:update]
     cmd: kubectl port-forward svc/kube-prometheus-stack-grafana 8081:80 -n monitoring
-  hubble:ui: 
+  hubble:ui:
     deps: [kubeconfig:update]
     cmd: cilium hubble ui
-  k9s: 
+  k9s:
     deps: [kubeconfig:update]
     cmd: k9s -A --headless --crumbsless
-  

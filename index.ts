@@ -271,6 +271,10 @@ const gatewayAPI = new k8s.yaml.ConfigFile(
 
 // === EKS === Cilium ===
 
+// TODO: prune old helm release secrets
+// NOTE: https://github.com/helm/helm/issues/7997
+// NOTE:
+
 // TODO: enable envoy slow start
 // NOTO: https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/load_balancing/slow_start
 const cilium = new k8s.helm.v3.Release(
@@ -286,14 +290,23 @@ const cilium = new k8s.helm.v3.Release(
     values: {
       rollOutCiliumPods: true,
       kubeProxyReplacement: 'strict',
+      k8sClientRateLimit: {
+        burst: 100,
+        qps: 50,
+      },
       k8sServiceHost: cluster.endpoint.apply((endpoint) => endpoint.replace('https://', '')),
       resources: {
         requests: {
           memory: '256Mi',
+          cpu: '100m',
         },
         limits: {
           memory: '512Mi',
         },
+      },
+      bandwidthManager: {
+        enabled: true,
+        bbr: true,
       },
       ingressController: {
         enabled: true,
@@ -344,6 +357,19 @@ const cilium = new k8s.helm.v3.Release(
           backend: 'envoy',
         },
       },
+      envoy: {
+        enabled: true,
+        rollOutPods: true,
+        resources: {
+          requests: {
+            memory: '64Mi',
+            cpu: '50m',
+          },
+          limits: {
+            memory: '256Mi',
+          },
+        },
+      },
       routingMode: 'native',
       bpf: {
         masquerade: true,
@@ -392,6 +418,8 @@ new aws.eks.Addon(nm('pod-identity-agent'), {
 })
 
 // === EKS === Addons === EBS CSI Driver ===
+
+// TODO: move all IRSA to Pod Identity Association
 
 const ebsCsiDriverRoleName = nm('ebs-csi-driver-irsa')
 const ebsCsiDriverRole = new aws.iam.Role(ebsCsiDriverRoleName, {
@@ -1089,8 +1117,8 @@ new k8s.apiextensions.CustomResource(
             name: defaultNodeClass.metadata.name,
           },
           kubelet: {
-            podsPerCore: 40,
-            maxPods: 160,
+            podsPerCore: 20,
+            maxPods: 110,
           },
           startupTaints: [
             {
@@ -1148,8 +1176,8 @@ const kyverno = new k8s.helm.v3.Release(
   { provider },
 )
 
-// TODO: Enable kyverno policies from https://github.com/kyverno/policies
-// TODO: Use a directory of policies to apply with ArgoCD
+// TODO: enable kyverno policies from https://github.com/kyverno/policies
+// TODO: use a directory of policies to apply with ArgoCD
 
 // === EKS === Limit Range === All Namespaces ===
 
@@ -1173,6 +1201,7 @@ new k8s.apiextensions.CustomResource(
     },
     spec: {
       generateExisting: true,
+      useServerSideApply: true,
       rules: [
         {
           name: addNamespaceLimitRange,
@@ -1427,7 +1456,7 @@ const certManager = new k8s.helm.v3.Release(
     name: 'cert-manager',
     chart: 'cert-manager',
     namespace: 'cert-manager',
-    version: 'v1.14.5',
+    version: 'v1.15.1',
     repositoryOpts: {
       repo: 'https://charts.jetstack.io',
     },
@@ -1709,6 +1738,7 @@ const kubePrometheusStack = new k8s.helm.v3.Release(
           resources: {
             requests: {
               memory: '1Gi',
+              cpu: '200m',
             },
             limits: {
               memory: '2Gi',
@@ -1840,156 +1870,175 @@ const kubePrometheusStack = new k8s.helm.v3.Release(
 
 // === EKS === Monitoring === Loki ===
 
-const lokiBuckets = ['chunks', 'ruler', 'admin'].reduce(
-  (acc, lokiBucketName) => ({
-    ...acc,
-    [lokiBucketName]: new aws.s3.Bucket(nmo(`loki-${lokiBucketName}`), {
-      bucket: nmo(`loki-${lokiBucketName}`),
-      acl: 'private',
-      serverSideEncryptionConfiguration: {
-        rule: {
-          applyServerSideEncryptionByDefault: {
-            sseAlgorithm: 'AES256',
-          },
-        },
-      },
-    }),
-  }),
-  {} as Record<string, aws.s3.Bucket>,
-)
-export const lokiBucketsMap = Object.fromEntries(
-  Object.entries(lokiBuckets).map(([lokiBucketName, { bucket }]) => [lokiBucketName, bucket]),
-)
+// const lokiBuckets = ['chunks', 'ruler', 'admin'].reduce(
+//   (acc, lokiBucketName) => ({
+//     ...acc,
+//     [lokiBucketName]: new aws.s3.Bucket(nmo(`loki-${lokiBucketName}`), {
+//       bucket: nmo(`loki-${lokiBucketName}`),
+//       acl: 'private',
+//       serverSideEncryptionConfiguration: {
+//         rule: {
+//           applyServerSideEncryptionByDefault: {
+//             sseAlgorithm: 'AES256',
+//           },
+//         },
+//       },
+//     }),
+//   }),
+//   {} as Record<string, aws.s3.Bucket>,
+// )
+// export const lokiBucketsMap = Object.fromEntries(
+//   Object.entries(lokiBuckets).map(([lokiBucketName, { bucket }]) => [lokiBucketName, bucket]),
+// )
 
-const lokiUser = new aws.iam.User(nm('loki-user'))
-const lokiAccessKey = new aws.iam.AccessKey(nm('loki-access-key'), {
-  user: lokiUser.name,
-})
-const lokiS3AccessPolicy = new aws.iam.Policy(nm('loki-policy'), {
-  policy: pulumi.all(Object.values(lokiBucketsMap)).apply((buckets) =>
-    aws.iam
-      .getPolicyDocument({
-        statements: [
-          {
-            effect: 'Allow',
-            actions: ['s3:ListBucket'],
-            resources: buckets.map((bucket) => `arn:aws:s3:::${bucket}`),
-          },
-          {
-            effect: 'Allow',
-            actions: ['s3:GetObject', 's3:PutObject', 's3:DeleteObject'],
-            resources: buckets.map((bucket) => `arn:aws:s3:::${bucket}/*`),
-          },
-        ],
-      })
-      .then((doc) => doc.json),
-  ),
-})
-new aws.iam.UserPolicyAttachment(nm('loki-user-policy'), {
-  policyArn: lokiS3AccessPolicy.arn,
-  user: lokiUser,
-})
+// const lokiUser = new aws.iam.User(nm('loki-user'))
+// const lokiAccessKey = new aws.iam.AccessKey(nm('loki-access-key'), {
+//   user: lokiUser.name,
+// })
+// const lokiS3AccessPolicy = new aws.iam.Policy(nm('loki-policy'), {
+//   policy: pulumi.all(Object.values(lokiBucketsMap)).apply((buckets) =>
+//     aws.iam
+//       .getPolicyDocument({
+//         statements: [
+//           {
+//             effect: 'Allow',
+//             actions: ['s3:ListBucket'],
+//             resources: buckets.map((bucket) => `arn:aws:s3:::${bucket}`),
+//           },
+//           {
+//             effect: 'Allow',
+//             actions: ['s3:GetObject', 's3:PutObject', 's3:DeleteObject'],
+//             resources: buckets.map((bucket) => `arn:aws:s3:::${bucket}/*`),
+//           },
+//         ],
+//       })
+//       .then((doc) => doc.json),
+//   ),
+// })
+// new aws.iam.UserPolicyAttachment(nm('loki-user-policy'), {
+//   policyArn: lokiS3AccessPolicy.arn,
+//   user: lokiUser,
+// })
 
-const loki = new k8s.helm.v3.Release(
-  nm('loki'),
-  {
-    name: 'loki',
-    chart: 'loki',
-    version: '6.6.4',
-    namespace: 'monitoring',
-    repositoryOpts: {
-      repo: 'https://grafana.github.io/helm-charts',
-    },
-    values: {
-      chunksCache: {
-        allocatedMemory: '512',
-        writebackSizeLimit: '64MB',
-      },
-      resultsCache: {
-        allocatedMemory: '128',
-        writebackSizeLimit: '64MB',
-      },
-      write: {
-        resources: {
-          requests: {
-            memory: '256Mi',
-          },
-          limits: {
-            memory: '1Gi',
-          },
-        },
-      },
-      read: {
-        resources: {
-          requests: {
-            memory: '256Mi',
-          },
-          limits: {
-            memory: '1Gi',
-          },
-        },
-      },
-      loki: {
-        auth_enabled: false,
-        schemaConfig: {
-          configs: [
-            {
-              from: '2024-04-01',
-              store: 'tsdb',
-              object_store: 's3',
-              schema: 'v13',
-              index: {
-                prefix: 'loki_index_',
-                period: '24h',
-              },
-            },
-          ],
-        },
-        ingester: {
-          chunk_encoding: 'snappy',
-        },
-        storage: {
-          type: 's3',
-          s3: {
-            endpoint: 's3.amazonaws.com',
-            region: regionId,
-            secretAccessKey: lokiAccessKey.secret,
-            accessKeyId: lokiAccessKey.id,
-            s3ForcePathStyle: false,
-            insecure: false,
-          },
-          bucketNames: lokiBucketsMap,
-        },
-      },
-    },
-  },
-  { provider },
-)
+// const loki = new k8s.helm.v3.Release(
+//   nm('loki'),
+//   {
+//     name: 'loki',
+//     chart: 'loki',
+//     version: '6.6.4',
+//     namespace: 'monitoring',
+//     repositoryOpts: {
+//       repo: 'https://grafana.github.io/helm-charts',
+//     },
+//     values: {
+//       chunksCache: {
+//         allocatedMemory: '512',
+//         writebackSizeLimit: '64MB',
+//       },
+//       resultsCache: {
+//         allocatedMemory: '128',
+//         writebackSizeLimit: '64MB',
+//       },
+//       write: {
+//         resources: {
+//           requests: {
+//             memory: '256Mi',
+//           },
+//           limits: {
+//             memory: '1Gi',
+//           },
+//         },
+//       },
+//       read: {
+//         resources: {
+//           requests: {
+//             memory: '256Mi',
+//           },
+//           limits: {
+//             memory: '1Gi',
+//           },
+//         },
+//       },
+//       loki: {
+//         auth_enabled: false,
+//         schemaConfig: {
+//           configs: [
+//             {
+//               from: '2024-04-01',
+//               store: 'tsdb',
+//               object_store: 's3',
+//               schema: 'v13',
+//               index: {
+//                 prefix: 'loki_index_',
+//                 period: '24h',
+//               },
+//             },
+//           ],
+//         },
+//         compactor: {
+//           retention_enabled: true,
+//           delete_request_store: 's3',
+//           compaction_interval: '10m',
+//           retention_delete_delay: '2h',
+//           delete_request_cancel_period: '10m',
+//           working_directory: '/data/retention',
+//         },
+//         limits_config: {
+//           retention_period: '1d',
+//           deletion_mode: 'filter-and-delete',
+//         },
+//         ingester: {
+//           chunk_encoding: 'snappy',
+//         },
+//         tracing: {
+//           enabled: true,
+//         },
+//         querier: {
+//           max_concurrent: 4,
+//         },
+//         storage: {
+//           type: 's3',
+//           s3: {
+//             endpoint: 's3.amazonaws.com',
+//             region: regionId,
+//             secretAccessKey: lokiAccessKey.secret,
+//             accessKeyId: lokiAccessKey.id,
+//             s3ForcePathStyle: false,
+//             insecure: false,
+//           },
+//           bucketNames: lokiBucketsMap,
+//         },
+//       },
+//       deploymentMode: 'SimpleScalable',
+//     },
+//   },
+//   { provider },
+// )
 
 // === EKS === Monitoring === Promtail ===
 
-const promtail = new k8s.helm.v3.Release(
-  nm('promtail'),
-  {
-    name: 'promtail',
-    chart: 'promtail',
-    version: '6.15.5',
-    namespace: monitoringNamespace.metadata.name,
-    repositoryOpts: {
-      repo: 'https://grafana.github.io/helm-charts',
-    },
-    values: {
-      config: {
-        clients: [
-          {
-            url: 'http://loki-gateway/loki/api/v1/push',
-          },
-        ],
-      },
-    },
-  },
-  { provider },
-)
+// const promtail = new k8s.helm.v3.Release(
+//   nm('promtail'),
+//   {
+//     name: 'promtail',
+//     chart: 'promtail',
+//     version: '6.15.5',
+//     namespace: monitoringNamespace.metadata.name,
+//     repositoryOpts: {
+//       repo: 'https://grafana.github.io/helm-charts',
+//     },
+//     values: {
+//       config: {
+//         clients: [
+//           {
+//             url: 'http://loki-gateway/loki/api/v1/push',
+//           },
+//         ],
+//       },
+//     },
+//   },
+//   { provider },
+// )
 
 // === EKS === EFS ===
 
@@ -2025,6 +2074,134 @@ new k8s.storage.v1.StorageClass(
       gid: '0',
     },
     mountOptions: ['iam'],
+  },
+  { provider },
+)
+
+// === EKS === Velero ===
+
+const veleroBucketName = nmo('velero')
+const veleroBucket = new aws.s3.Bucket(veleroBucketName, {
+  bucket: veleroBucketName,
+  acl: 'private',
+  serverSideEncryptionConfiguration: {
+    rule: {
+      applyServerSideEncryptionByDefault: {
+        sseAlgorithm: 'AES256',
+      },
+    },
+  },
+})
+const veleroBackupRoleName = nm('velero-backup-role')
+const veleroBackupRole = new aws.iam.Role(veleroBackupRoleName, {
+  assumeRolePolicy: assumeRoleForEKSPodIdentity(),
+})
+const veleroBackupPolicyName = nm('velero-backup-policy')
+const veleroBackupPolicy = new aws.iam.Policy(veleroBackupPolicyName, {
+  policy: veleroBucket.arn.apply((bucket) =>
+    aws.iam
+      .getPolicyDocument({
+        statements: [
+          {
+            effect: 'Allow',
+            actions: [
+              'ec2:DescribeVolumes',
+              'ec2:DescribeSnapshots',
+              'ec2:CreateTags',
+              'ec2:CreateVolume',
+              'ec2:CreateSnapshot',
+              'ec2:DeleteSnapshot',
+            ],
+            resources: ['*'],
+          },
+          {
+            effect: 'Allow',
+            actions: [
+              's3:GetObject',
+              's3:DeleteObject',
+              's3:PutObject',
+              's3:AbortMultipartUpload',
+              's3:ListMultipartUploadParts',
+            ],
+            resources: [`${bucket}/*`],
+          },
+          {
+            effect: 'Allow',
+            actions: ['s3:ListBucket'],
+            resources: [bucket],
+          },
+        ],
+      })
+      .then((doc) => doc.json),
+  ),
+})
+new aws.iam.RolePolicyAttachment(veleroBackupRoleName, {
+  policyArn: veleroBackupPolicy.arn,
+  role: veleroBackupRole,
+})
+new aws.eks.PodIdentityAssociation(nm('velero-backup-pod-identity'), {
+  clusterName: eksCluster.name,
+  namespace: 'velero',
+  serviceAccount: 'velero-server',
+  roleArn: veleroBackupRole.arn,
+})
+const veleroNamespace = new k8s.core.v1.Namespace(nm('velero'), { metadata: { name: 'velero' } }, { provider })
+const velero = new k8s.helm.v3.Release(
+  nm('velero'),
+  {
+    name: 'velero',
+    chart: 'velero',
+    version: '7.1.0',
+    namespace: veleroNamespace.metadata.name,
+    repositoryOpts: {
+      repo: 'https://vmware-tanzu.github.io/helm-charts',
+    },
+    values: {
+      configuration: {
+        backupStorageLocation: [
+          {
+            name: 'default',
+            provider: 'aws',
+            bucket: veleroBucket.bucket,
+            config: {
+              region: regionId,
+            },
+          },
+        ],
+        volumeSnapshotLocation: [
+          {
+            name: 'default',
+            provider: 'aws',
+          },
+        ],
+        snapshotsEnabled: true,
+        backupsEnabled: true,
+      },
+      initContainers: [
+        {
+          name: 'velero-plugin-for-aws',
+          image: 'velero/velero-plugin-for-aws:v1.10.0',
+          volumeMounts: [
+            {
+              mountPath: '/target',
+              name: 'plugins',
+            },
+          ],
+        },
+      ],
+      schedules: {
+        weekly: {
+          schedule: '@weekly',
+          useOwnerReferencesInBackup: false,
+          template: {
+            ttl: `${14 * 24}h`,
+            storageLocation: 'default',
+            includedNamespaces: ['*'],
+          },
+        },
+      },
+      deployNodeAgent: true,
+    },
   },
   { provider },
 )
@@ -2078,6 +2255,7 @@ const argocd = new k8s.helm.v3.Release(
         resources: {
           requests: {
             memory: '1Gi',
+            cpu: '100m',
           },
           limits: {
             memory: '2Gi',
@@ -2215,11 +2393,12 @@ function registerHelmRelease(release: k8s.helm.v3.Release, project: string) {
   certManager,
   metricsServer,
   kubePrometheusStack,
-  loki,
-  promtail,
+  // loki,
+  // promtail,
   eso,
   vpa,
   kyverno,
+  velero,
   argocd,
   // TODO: configure argocd to play nicely with cilium
   // NOTE: https://docs.cilium.io/en/latest/configuration/argocd-issues/
