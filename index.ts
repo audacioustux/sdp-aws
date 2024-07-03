@@ -2273,7 +2273,7 @@ const argocd = new k8s.helm.v3.Release(
             memory: '128Mi',
           },
           limits: {
-            memory: '512Mi',
+            memory: '256Mi',
           },
         },
       },
