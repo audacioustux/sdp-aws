@@ -287,6 +287,7 @@ const cilium = new k8s.helm.v3.Release(
     repositoryOpts: {
       repo: 'https://helm.cilium.io',
     },
+    maxHistory: 1,
     values: {
       rollOutCiliumPods: true,
       kubeProxyReplacement: 'strict',
@@ -298,7 +299,6 @@ const cilium = new k8s.helm.v3.Release(
       resources: {
         requests: {
           memory: '256Mi',
-          cpu: '100m',
         },
         limits: {
           memory: '512Mi',
@@ -340,6 +340,9 @@ const cilium = new k8s.helm.v3.Release(
       },
       operator: {
         rollOutPods: true,
+        prometheus: {
+          enabled: true,
+        },
         resources: {
           requests: {
             memory: '64Mi',
@@ -363,7 +366,6 @@ const cilium = new k8s.helm.v3.Release(
         resources: {
           requests: {
             memory: '64Mi',
-            cpu: '50m',
           },
           limits: {
             memory: '256Mi',
@@ -380,6 +382,9 @@ const cilium = new k8s.helm.v3.Release(
       eni: {
         enabled: true,
         awsEnablePrefixDelegation: true,
+      },
+      prometheus: {
+        enabled: true,
       },
     },
   },
@@ -1010,6 +1015,7 @@ const karpenterCRD = new k8s.helm.v3.Release(
     chart: 'oci://public.ecr.aws/karpenter/karpenter-crd',
     namespace: 'kube-system',
     version: '0.37.0',
+    maxHistory: 1,
   },
   { provider },
 )
@@ -1021,6 +1027,7 @@ const karpenter = new k8s.helm.v3.Release(
     chart: 'oci://public.ecr.aws/karpenter/karpenter',
     namespace: karpenterCRD.namespace,
     version: karpenterCRD.version,
+    maxHistory: 1,
     values: {
       // TODO: increase to 2 replicas after managed node group issues are resolved
       replicas: 1,
@@ -1155,6 +1162,7 @@ const vpa = new k8s.helm.v3.Release(
     repositoryOpts: {
       repo: 'https://cowboysysop.github.io/charts/',
     },
+    maxHistory: 1,
   },
   { provider },
 )
@@ -1172,6 +1180,7 @@ const kyverno = new k8s.helm.v3.Release(
     repositoryOpts: {
       repo: 'https://kyverno.github.io/kyverno/',
     },
+    maxHistory: 1,
   },
   { provider },
 )
@@ -1314,6 +1323,7 @@ const eso = new k8s.helm.v3.Release(
     repositoryOpts: {
       repo: 'https://charts.external-secrets.io',
     },
+    maxHistory: 1,
     values: {
       installCRDs: true,
     },
@@ -1404,6 +1414,7 @@ const externalDNS = new k8s.helm.v3.Release(
     repositoryOpts: {
       repo: 'https://kubernetes-sigs.github.io/external-dns/',
     },
+    maxHistory: 1,
     values: {
       serviceAccount: {
         create: true,
@@ -1460,6 +1471,7 @@ const certManager = new k8s.helm.v3.Release(
     repositoryOpts: {
       repo: 'https://charts.jetstack.io',
     },
+    maxHistory: 1,
     values: {
       installCRDs: true,
       prometheus: {
@@ -1661,6 +1673,7 @@ const metricsServer = new k8s.helm.v3.Release(
     repositoryOpts: {
       repo: 'https://kubernetes-sigs.github.io/metrics-server/',
     },
+    maxHistory: 1,
     values: {
       resources: config.defaults.pod.resources,
     },
@@ -1727,6 +1740,7 @@ const kubePrometheusStack = new k8s.helm.v3.Release(
     repositoryOpts: {
       repo: 'https://prometheus-community.github.io/helm-charts',
     },
+    maxHistory: 1,
     values: {
       prometheus: {
         prometheusSpec: {
@@ -1738,7 +1752,7 @@ const kubePrometheusStack = new k8s.helm.v3.Release(
           resources: {
             requests: {
               memory: '1Gi',
-              cpu: '200m',
+              cpu: '0.1',
             },
             limits: {
               memory: '2Gi',
@@ -1870,175 +1884,161 @@ const kubePrometheusStack = new k8s.helm.v3.Release(
 
 // === EKS === Monitoring === Loki ===
 
-// const lokiBuckets = ['chunks', 'ruler', 'admin'].reduce(
-//   (acc, lokiBucketName) => ({
-//     ...acc,
-//     [lokiBucketName]: new aws.s3.Bucket(nmo(`loki-${lokiBucketName}`), {
-//       bucket: nmo(`loki-${lokiBucketName}`),
-//       acl: 'private',
-//       serverSideEncryptionConfiguration: {
-//         rule: {
-//           applyServerSideEncryptionByDefault: {
-//             sseAlgorithm: 'AES256',
-//           },
-//         },
-//       },
-//     }),
-//   }),
-//   {} as Record<string, aws.s3.Bucket>,
-// )
-// export const lokiBucketsMap = Object.fromEntries(
-//   Object.entries(lokiBuckets).map(([lokiBucketName, { bucket }]) => [lokiBucketName, bucket]),
-// )
+const lokiBuckets = ['chunks', 'ruler', 'admin'].reduce(
+  (acc, lokiBucketName) => ({
+    ...acc,
+    [lokiBucketName]: new aws.s3.BucketV2(nmo(`loki-${lokiBucketName}`), {
+      bucket: nmo(`loki-${lokiBucketName}`),
+    }),
+  }),
+  {} as Record<string, aws.s3.BucketV2>,
+)
+export const lokiBucketsMap = Object.fromEntries(
+  Object.entries(lokiBuckets).map(([lokiBucketName, { bucket }]) => [lokiBucketName, bucket]),
+)
 
-// const lokiUser = new aws.iam.User(nm('loki-user'))
-// const lokiAccessKey = new aws.iam.AccessKey(nm('loki-access-key'), {
-//   user: lokiUser.name,
-// })
-// const lokiS3AccessPolicy = new aws.iam.Policy(nm('loki-policy'), {
-//   policy: pulumi.all(Object.values(lokiBucketsMap)).apply((buckets) =>
-//     aws.iam
-//       .getPolicyDocument({
-//         statements: [
-//           {
-//             effect: 'Allow',
-//             actions: ['s3:ListBucket'],
-//             resources: buckets.map((bucket) => `arn:aws:s3:::${bucket}`),
-//           },
-//           {
-//             effect: 'Allow',
-//             actions: ['s3:GetObject', 's3:PutObject', 's3:DeleteObject'],
-//             resources: buckets.map((bucket) => `arn:aws:s3:::${bucket}/*`),
-//           },
-//         ],
-//       })
-//       .then((doc) => doc.json),
-//   ),
-// })
-// new aws.iam.UserPolicyAttachment(nm('loki-user-policy'), {
-//   policyArn: lokiS3AccessPolicy.arn,
-//   user: lokiUser,
-// })
+const lokiUser = new aws.iam.User(nm('loki-user'))
+const lokiAccessKey = new aws.iam.AccessKey(nm('loki-access-key'), {
+  user: lokiUser.name,
+})
+const lokiS3AccessPolicy = new aws.iam.Policy(nm('loki-policy'), {
+  policy: pulumi.all(Object.values(lokiBucketsMap)).apply((buckets) =>
+    aws.iam
+      .getPolicyDocument({
+        statements: [
+          {
+            effect: 'Allow',
+            actions: ['s3:ListBucket'],
+            resources: buckets.map((bucket) => `arn:aws:s3:::${bucket}`),
+          },
+          {
+            effect: 'Allow',
+            actions: ['s3:GetObject', 's3:PutObject', 's3:DeleteObject'],
+            resources: buckets.map((bucket) => `arn:aws:s3:::${bucket}/*`),
+          },
+        ],
+      })
+      .then((doc) => doc.json),
+  ),
+})
+new aws.iam.UserPolicyAttachment(nm('loki-user-policy'), {
+  policyArn: lokiS3AccessPolicy.arn,
+  user: lokiUser,
+})
 
-// const loki = new k8s.helm.v3.Release(
-//   nm('loki'),
-//   {
-//     name: 'loki',
-//     chart: 'loki',
-//     version: '6.6.4',
-//     namespace: 'monitoring',
-//     repositoryOpts: {
-//       repo: 'https://grafana.github.io/helm-charts',
-//     },
-//     values: {
-//       chunksCache: {
-//         allocatedMemory: '512',
-//         writebackSizeLimit: '64MB',
-//       },
-//       resultsCache: {
-//         allocatedMemory: '128',
-//         writebackSizeLimit: '64MB',
-//       },
-//       write: {
-//         resources: {
-//           requests: {
-//             memory: '256Mi',
-//           },
-//           limits: {
-//             memory: '1Gi',
-//           },
-//         },
-//       },
-//       read: {
-//         resources: {
-//           requests: {
-//             memory: '256Mi',
-//           },
-//           limits: {
-//             memory: '1Gi',
-//           },
-//         },
-//       },
-//       loki: {
-//         auth_enabled: false,
-//         schemaConfig: {
-//           configs: [
-//             {
-//               from: '2024-04-01',
-//               store: 'tsdb',
-//               object_store: 's3',
-//               schema: 'v13',
-//               index: {
-//                 prefix: 'loki_index_',
-//                 period: '24h',
-//               },
-//             },
-//           ],
-//         },
-//         compactor: {
-//           retention_enabled: true,
-//           delete_request_store: 's3',
-//           compaction_interval: '10m',
-//           retention_delete_delay: '2h',
-//           delete_request_cancel_period: '10m',
-//           working_directory: '/data/retention',
-//         },
-//         limits_config: {
-//           retention_period: '1d',
-//           deletion_mode: 'filter-and-delete',
-//         },
-//         ingester: {
-//           chunk_encoding: 'snappy',
-//         },
-//         tracing: {
-//           enabled: true,
-//         },
-//         querier: {
-//           max_concurrent: 4,
-//         },
-//         storage: {
-//           type: 's3',
-//           s3: {
-//             endpoint: 's3.amazonaws.com',
-//             region: regionId,
-//             secretAccessKey: lokiAccessKey.secret,
-//             accessKeyId: lokiAccessKey.id,
-//             s3ForcePathStyle: false,
-//             insecure: false,
-//           },
-//           bucketNames: lokiBucketsMap,
-//         },
-//       },
-//       deploymentMode: 'SimpleScalable',
-//     },
-//   },
-//   { provider },
-// )
+const loki = new k8s.helm.v3.Release(
+  nm('loki'),
+  {
+    name: 'loki',
+    chart: 'loki',
+    version: '6.6.4',
+    namespace: 'monitoring',
+    repositoryOpts: {
+      repo: 'https://grafana.github.io/helm-charts',
+    },
+    values: {
+      chunksCache: {
+        allocatedMemory: '512',
+        writebackSizeLimit: '64MB',
+      },
+      resultsCache: {
+        allocatedMemory: '128',
+        writebackSizeLimit: '64MB',
+      },
+      write: {
+        resources: {
+          requests: {
+            memory: '256Mi',
+          },
+          limits: {
+            memory: '1Gi',
+          },
+        },
+      },
+      read: {
+        replicas: 3,
+        resources: {
+          requests: {
+            memory: '256Mi',
+          },
+          limits: {
+            memory: '1Gi',
+          },
+        },
+      },
+      loki: {
+        auth_enabled: false,
+        schemaConfig: {
+          configs: [
+            {
+              from: '2024-04-01',
+              store: 'tsdb',
+              object_store: 's3',
+              schema: 'v13',
+              index: {
+                prefix: 'loki_index_',
+                period: '24h',
+              },
+            },
+          ],
+        },
+        compactor: {
+          retention_enabled: true,
+          delete_request_store: 's3',
+          compaction_interval: '30m',
+          retention_delete_delay: '2h',
+          retention_delete_worker_count: 150,
+        },
+        limits_config: {
+          retention_period: '7d',
+        },
+        ingester: {
+          chunk_encoding: 'snappy',
+        },
+        storage: {
+          type: 's3',
+          s3: {
+            endpoint: 's3.amazonaws.com',
+            region: regionId,
+            secretAccessKey: lokiAccessKey.secret,
+            accessKeyId: lokiAccessKey.id,
+            s3ForcePathStyle: false,
+            insecure: false,
+          },
+          bucketNames: lokiBucketsMap,
+        },
+      },
+      deploymentMode: 'SimpleScalable',
+    },
+  },
+  { provider },
+)
 
 // === EKS === Monitoring === Promtail ===
 
-// const promtail = new k8s.helm.v3.Release(
-//   nm('promtail'),
-//   {
-//     name: 'promtail',
-//     chart: 'promtail',
-//     version: '6.15.5',
-//     namespace: monitoringNamespace.metadata.name,
-//     repositoryOpts: {
-//       repo: 'https://grafana.github.io/helm-charts',
-//     },
-//     values: {
-//       config: {
-//         clients: [
-//           {
-//             url: 'http://loki-gateway/loki/api/v1/push',
-//           },
-//         ],
-//       },
-//     },
-//   },
-//   { provider },
-// )
+const promtail = new k8s.helm.v3.Release(
+  nm('promtail'),
+  {
+    name: 'promtail',
+    chart: 'promtail',
+    version: '6.15.5',
+    namespace: monitoringNamespace.metadata.name,
+    repositoryOpts: {
+      repo: 'https://grafana.github.io/helm-charts',
+    },
+    maxHistory: 1,
+    values: {
+      config: {
+        clients: [
+          {
+            url: 'http://loki-gateway/loki/api/v1/push',
+          },
+        ],
+      },
+    },
+  },
+  { provider },
+)
 
 // === EKS === EFS ===
 
@@ -2156,6 +2156,7 @@ const velero = new k8s.helm.v3.Release(
     repositoryOpts: {
       repo: 'https://vmware-tanzu.github.io/helm-charts',
     },
+    maxHistory: 1,
     values: {
       configuration: {
         backupStorageLocation: [
@@ -2220,6 +2221,7 @@ const argocd = new k8s.helm.v3.Release(
     chart: 'argo-cd',
     namespace: argocdNamespace.metadata.name,
     version: '7.3.3',
+    maxHistory: 1,
     repositoryOpts: {
       repo: 'https://argoproj.github.io/argo-helm',
     },
@@ -2255,7 +2257,7 @@ const argocd = new k8s.helm.v3.Release(
         resources: {
           requests: {
             memory: '1Gi',
-            cpu: '100m',
+            cpu: '0.1',
           },
           limits: {
             memory: '2Gi',
@@ -2393,8 +2395,8 @@ function registerHelmRelease(release: k8s.helm.v3.Release, project: string) {
   certManager,
   metricsServer,
   kubePrometheusStack,
-  // loki,
-  // promtail,
+  loki,
+  promtail,
   eso,
   vpa,
   kyverno,

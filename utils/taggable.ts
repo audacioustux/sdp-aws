@@ -202,6 +202,7 @@ const taggableResourceTypes = [
   'aws:route53/resolverRule:ResolverRule',
   'aws:route53/zone:Zone',
   'aws:s3/bucket:Bucket',
+  'aws:s3/bucketV2:BucketV2',
   'aws:s3/bucketObject:BucketObject',
   'aws:sagemaker/endpoint:Endpoint',
   'aws:sagemaker/endpointConfiguration:EndpointConfiguration',
