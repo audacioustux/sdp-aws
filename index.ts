@@ -1748,11 +1748,9 @@ const kubePrometheusStack = new k8s.helm.v3.Release(
           podMonitorSelectorNilUsesHelmValues: false,
           ruleSelectorNilUsesHelmValues: false,
           probeSelectorNilUsesHelmValues: false,
-          replicas: 1,
           resources: {
             requests: {
-              memory: '1Gi',
-              cpu: '0.1',
+              memory: '1.5Gi',
             },
             limits: {
               memory: '2Gi',
@@ -2257,7 +2255,6 @@ const argocd = new k8s.helm.v3.Release(
         resources: {
           requests: {
             memory: '1Gi',
-            cpu: '0.1',
           },
           limits: {
             memory: '2Gi',
@@ -2414,10 +2411,9 @@ function registerHelmRelease(release: k8s.helm.v3.Release, project: string) {
 export const clusterSecretStores = {
   aws: clusterSecretStoreAWS,
 }
-export const clusterIssuer = {
+export const clusterIssuers = {
   letsencryptProd: letsencryptProdIssuerName,
   letsencryptStaging: letsencryptStagingIssuerName,
   zerossl: zerosslIssuerName,
 }
-
 export { kubeconfig, publicRouteTable, privateRouteTable, vpc, eksCluster, kmsKey, argocdPassword, grafanaPassword }
