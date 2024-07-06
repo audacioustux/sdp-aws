@@ -3,7 +3,7 @@ config:
   argocd:host: cd.coderstrust.global
   aws:region: ap-south-1
   git:password:
-    secure: AAABAMA8s6xPPlvbbNtVcQNoYfCsIdA4Y2jFgB67F0iNcq8gQn7WCow0U4cHMQrraO7aqIJJJhotfzWqbXSeEEC6+gEmI5xxrNOp5uGfqzJ22lrplqGhbVcNSfg/46viq5yFzczaYRRjdtKfzaNXyyy58V6X20pfUI7Yy44=
+    secure: AAABAMrdiPw84LEyqs9BDkP1xv4G+cjHN6TFU7LhClmTqM8Dn6w7zaWkyfADUjhCISQW6/ywQXtH7p9OOYcpG+H7BSwlDl7Cx05Kmnsq9vh8V2b8UHCzM1nAybxY8GxbVq9EIdBvZ/FvIkXxYJDvex868N7cirM5avXYaTU=
   git:path: .
   git:repo: https://github.com/audacioustux/sdp-aws
   git:username: audacioustux
@@ -13,6 +13,7 @@ config:
     - coderstrust.com
     - superkids.ac
     - coderstrust.global
+  sdp-aws:namespace: CodersTrust
   zerossl:hmac:
-    secure: AAABAL77UvFPI7H0+fp2GZcAK7t3UYkIHAamczJXJrSZxSvLEBzyGVby9KFOJ/ZXzwf7A+nn7ECxInzcZqil2vyIXhDv1BpMjPYtvnh/9K6yhtGdpuQ7NGBohNZ74z2JbfqIWidXCY5VMxFWG0vVsdSPgWS4qQ==
+    secure: AAABALzKbamokubEgCw8QveEWM1FTrxDENyR213JSm+mjc58eXNeRfkIjt/cd+G6D3Bpp/3QHJf10KBHF3UUS6ZdUCwadnWyEILMybVkjqWRTsaTH++jnjtRrDg7QxD/HwHTkc5JuWrv+GOd0/0pTXjrxtph2w==
   zerossl:kid: Us6B_N5640rXXuCezx7yeQ

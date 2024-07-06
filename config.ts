@@ -1,9 +1,11 @@
 import { getProject, getOrganization, getStack, Config } from '@pulumi/pulumi'
 
+const pulumiConfig = new Config()
 const pulumi = {
-  organization: getOrganization().toLowerCase(),
-  project: getProject().toLowerCase(),
-  stack: getStack().toLowerCase(),
+  organization: getOrganization(),
+  project: getProject(),
+  stack: getStack(),
+  namespace: pulumiConfig.require('namespace').toLowerCase(),
 }
 
 const gitConfig = new Config('git')

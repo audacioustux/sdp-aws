@@ -11,17 +11,18 @@ const partitionId = await aws.getPartition().then((partition) => partition.id)
 const regionId = await aws.getRegion().then((region) => region.id)
 const accountId = await aws.getCallerIdentity().then((identity) => identity.accountId)
 
-const { project, organization, stack } = config.pulumi
+const { project, organization, stack, namespace } = config.pulumi
 
 // Automatically inject tags.
 registerAutoTags({
   'pulumi:Organization': organization,
   'pulumi:Project': project,
   'pulumi:Stack': stack,
+  namespace,
 })
 
 const nm = (name: string) => `${project}-${stack}-${name}`
-const nmo = (name: string) => `${nm(name)}-${organization}`
+const gnm = (name: string) => `${nm(name)}-${namespace}`
 
 // === VPC ===
 
@@ -1683,7 +1684,7 @@ const metricsServer = new k8s.helm.v3.Release(
 
 // === EKS === Monitoring === Kube Prometheus Stack ===
 
-const thanosBucketName = nmo('thanos-bucket')
+const thanosBucketName = gnm('thanos-bucket')
 const thanosBucket = new aws.s3.Bucket(thanosBucketName, {
   bucket: thanosBucketName,
   acl: 'private',
@@ -1885,8 +1886,8 @@ const kubePrometheusStack = new k8s.helm.v3.Release(
 const lokiBuckets = ['chunks', 'ruler', 'admin'].reduce(
   (acc, lokiBucketName) => ({
     ...acc,
-    [lokiBucketName]: new aws.s3.BucketV2(nmo(`loki-${lokiBucketName}`), {
-      bucket: nmo(`loki-${lokiBucketName}`),
+    [lokiBucketName]: new aws.s3.BucketV2(gnm(`loki-${lokiBucketName}`), {
+      bucket: gnm(`loki-${lokiBucketName}`),
     }),
   }),
   {} as Record<string, aws.s3.BucketV2>,
@@ -2078,7 +2079,7 @@ new k8s.storage.v1.StorageClass(
 
 // === EKS === Velero ===
 
-const veleroBucketName = nmo('velero')
+const veleroBucketName = gnm('velero')
 const veleroBucket = new aws.s3.Bucket(veleroBucketName, {
   bucket: veleroBucketName,
   acl: 'private',
