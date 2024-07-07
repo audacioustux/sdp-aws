@@ -1,12 +1,9 @@
 import { getProject, getOrganization, getStack, Config } from '@pulumi/pulumi'
 
-const pulumiConfig = new Config()
-const pulumi = {
-  organization: getOrganization(),
-  project: getProject(),
-  stack: getStack(),
-  namespace: pulumiConfig.require('namespace').toLowerCase(),
-}
+const organization = getOrganization()
+const project = getProject()
+const stack = getStack()
+const pulumi = { organization, project, stack }
 
 const gitConfig = new Config('git')
 const git = {
@@ -17,6 +14,7 @@ const git = {
 }
 
 const defaults = {
+  tagsAll: Object.fromEntries(Object.entries(pulumi).map(([k, v]) => [`pulumi:${k}`, v])),
   pod: {
     resources: {
       requests: {
@@ -57,6 +55,11 @@ const zerossl = {
   hmac: zerosslConfig.requireSecret('hmac'),
 }
 
+const s3Config = new Config('s3')
+const s3 = {
+  bucketSuffix: s3Config.require('bucketSuffix'),
+}
+
 // TODO: move hard-coded configs in index.ts to here
 
-export { git, pulumi, grafana, defaults, argocd, admin, route53, zerossl }
+export { git, pulumi, grafana, defaults, argocd, admin, route53, zerossl, s3 }

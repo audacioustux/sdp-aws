@@ -6,23 +6,19 @@ import { registerAutoTags } from './utils/autoTag.ts'
 import * as config from './config.ts'
 import { assumeRoleForEKSPodIdentity } from './utils/policyStatement.ts'
 import * as random from '@pulumi/random'
+import * as refiners from './utils/refiners.ts'
 
 const partitionId = await aws.getPartition().then((partition) => partition.id)
 const regionId = await aws.getRegion().then((region) => region.id)
 const accountId = await aws.getCallerIdentity().then((identity) => identity.accountId)
 
-const { project, organization, stack, namespace } = config.pulumi
+const { project, stack } = config.pulumi
 
 // Automatically inject tags.
-registerAutoTags({
-  'pulumi:Organization': organization,
-  'pulumi:Project': project,
-  'pulumi:Stack': stack,
-  namespace,
-})
+registerAutoTags(config.defaults.tagsAll)
 
 const nm = (name: string) => `${project}-${stack}-${name}`
-const gnm = (name: string) => `${nm(name)}-${namespace}`
+const s3nm = (name: string) => refiners.s3BucketName(`${nm(name)}-${config.s3.bucketSuffix}`)
 
 // === VPC ===
 
@@ -1684,7 +1680,7 @@ const metricsServer = new k8s.helm.v3.Release(
 
 // === EKS === Monitoring === Kube Prometheus Stack ===
 
-const thanosBucketName = gnm('thanos-bucket')
+const thanosBucketName = s3nm('thanos-bucket')
 const thanosBucket = new aws.s3.Bucket(thanosBucketName, {
   bucket: thanosBucketName,
   acl: 'private',
@@ -1886,8 +1882,8 @@ const kubePrometheusStack = new k8s.helm.v3.Release(
 const lokiBuckets = ['chunks', 'ruler', 'admin'].reduce(
   (acc, lokiBucketName) => ({
     ...acc,
-    [lokiBucketName]: new aws.s3.BucketV2(gnm(`loki-${lokiBucketName}`), {
-      bucket: gnm(`loki-${lokiBucketName}`),
+    [lokiBucketName]: new aws.s3.BucketV2(s3nm(`loki-${lokiBucketName}`), {
+      bucket: s3nm(`loki-${lokiBucketName}`),
     }),
   }),
   {} as Record<string, aws.s3.BucketV2>,
@@ -2079,7 +2075,7 @@ new k8s.storage.v1.StorageClass(
 
 // === EKS === Velero ===
 
-const veleroBucketName = gnm('velero')
+const veleroBucketName = s3nm('velero')
 const veleroBucket = new aws.s3.Bucket(veleroBucketName, {
   bucket: veleroBucketName,
   acl: 'private',
