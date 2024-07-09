@@ -6,7 +6,6 @@ import { registerAutoTags } from './utils/autoTag.ts'
 import * as config from './config.ts'
 import { assumeRoleForEKSPodIdentity } from './utils/policyStatement.ts'
 import * as random from '@pulumi/random'
-import * as refiners from './utils/refiners.ts'
 
 const partitionId = await aws.getPartition().then((partition) => partition.id)
 const regionId = await aws.getRegion().then((region) => region.id)
@@ -18,7 +17,6 @@ const { project, stack } = config.pulumi
 registerAutoTags(config.defaults.tagsAll)
 
 const nm = (name: string) => `${project}-${stack}-${name}`
-const s3nm = (name: string) => refiners.s3BucketName(`${nm(name)}-${config.s3.bucketSuffix}`)
 
 // === VPC ===
 
@@ -34,14 +32,17 @@ const vpc = new aws.ec2.Vpc(vpcName, {
 
 // === VPC === Subnets ===
 
-const availabilityZones = await aws.getAvailabilityZones({
-  state: 'available',
-})
-const publicSubnets = availabilityZones.names.map((az, index) => {
+const availabilityZones = await aws
+  .getAvailabilityZones({
+    state: 'available',
+  })
+  .then(({ names }) => names.slice(0, 3))
+// NOTE: 10.0.48.0/20 is free for future use
+const publicSubnets = availabilityZones.map((az, index) => {
   const subnetName = nm(`public-${index}`)
   return new aws.ec2.Subnet(subnetName, {
     vpcId: vpc.id,
-    cidrBlock: `10.0.${index}.0/24`,
+    cidrBlock: `10.0.${index * 16}.0/20`,
     availabilityZone: az,
     mapPublicIpOnLaunch: true,
     tags: {
@@ -49,11 +50,11 @@ const publicSubnets = availabilityZones.names.map((az, index) => {
     },
   })
 })
-const privateSubnets = availabilityZones.names.map((az, index) => {
+const privateSubnets = availabilityZones.map((az, index) => {
   const subnetName = nm(`private-${index}`)
   return new aws.ec2.Subnet(subnetName, {
     vpcId: vpc.id,
-    cidrBlock: `10.0.${index + 10}.0/24`,
+    cidrBlock: `10.0.${index * 64 + 64}.0/18`,
     availabilityZone: az,
     mapPublicIpOnLaunch: false,
     tags: {
@@ -203,7 +204,7 @@ const {
 // === EKS === Node Group ===
 
 const defaultNodeGroupName = nm('default')
-new eks.ManagedNodeGroup(defaultNodeGroupName, {
+const defaultNodeGroup = new eks.ManagedNodeGroup(defaultNodeGroupName, {
   cluster,
   nodeGroupName: defaultNodeGroupName,
   nodeRole: cluster.instanceRoles[0],
@@ -219,11 +220,12 @@ new eks.ManagedNodeGroup(defaultNodeGroupName, {
   // bootstrapExtraArgs: '--use-max-pods false',
   amiType: 'AL2023_ARM_64_STANDARD',
   // NOTE: large node size so the Pod limit is less likely to be reached
+  // NOTE: t4g instances has larger Pod limit
   instanceTypes: ['t4g.large'],
   scalingConfig: {
-    minSize: 1,
-    maxSize: 1,
-    desiredSize: 1,
+    minSize: 2,
+    maxSize: 2,
+    desiredSize: 2,
   },
   taints: [
     {
@@ -268,10 +270,6 @@ const gatewayAPI = new k8s.yaml.ConfigFile(
 
 // === EKS === Cilium ===
 
-// TODO: prune old helm release secrets
-// NOTE: https://github.com/helm/helm/issues/7997
-// NOTE:
-
 // TODO: enable envoy slow start
 // NOTO: https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/upstream/load_balancing/slow_start
 const cilium = new k8s.helm.v3.Release(
@@ -289,7 +287,7 @@ const cilium = new k8s.helm.v3.Release(
       rollOutCiliumPods: true,
       kubeProxyReplacement: 'strict',
       k8sClientRateLimit: {
-        burst: 100,
+        burst: 200,
         qps: 50,
       },
       k8sServiceHost: cluster.endpoint.apply((endpoint) => endpoint.replace('https://', '')),
@@ -474,6 +472,28 @@ new aws.eks.Addon(nm('ebs-csi-driver'), {
   serviceAccountRoleArn: ebsCsiDriverRole.arn,
   resolveConflictsOnUpdate: 'OVERWRITE',
 })
+
+// gp3 storage class, set as default
+const gp3StorageClassName = 'gp3'
+new k8s.storage.v1.StorageClass(
+  nm(gp3StorageClassName),
+  {
+    metadata: {
+      name: gp3StorageClassName,
+      annotations: {
+        'storageclass.kubernetes.io/is-default-class': 'true',
+      },
+    },
+    provisioner: 'ebs.csi.aws.com',
+    volumeBindingMode: 'WaitForFirstConsumer',
+    reclaimPolicy: 'Delete',
+    parameters: {
+      type: 'gp3',
+    },
+    allowVolumeExpansion: true,
+  },
+  { provider },
+)
 
 // === EKS === Addons === EFS CSI Driver ===
 
@@ -1026,8 +1046,7 @@ const karpenter = new k8s.helm.v3.Release(
     version: karpenterCRD.version,
     maxHistory: 1,
     values: {
-      // TODO: increase to 2 replicas after managed node group issues are resolved
-      replicas: 1,
+      replicas: 2,
       settings: {
         clusterName: eksCluster.name,
         interruptionQueue: EC2InterruptionQueue.name,
@@ -1051,7 +1070,7 @@ const karpenter = new k8s.helm.v3.Release(
     },
     timeout: 60 * 30,
   },
-  { provider },
+  { provider, dependsOn: [defaultNodeGroup] },
 )
 
 // === EKS === Karpenter === Node Class ===
@@ -1143,7 +1162,7 @@ new k8s.apiextensions.CustomResource(
       },
     },
   },
-  { provider, dependsOn: [karpenter] },
+  { provider },
 )
 
 // === EKS === Vertical Pod Autoscaler ===
@@ -1471,12 +1490,6 @@ const certManager = new k8s.helm.v3.Release(
     maxHistory: 1,
     values: {
       installCRDs: true,
-      prometheus: {
-        enabled: true,
-        servicemonitor: {
-          enabled: true,
-        },
-      },
       enableCertificateOwnerRef: true,
       extraArgs: [
         '--enable-certificate-owner-ref=true',
@@ -1563,7 +1576,7 @@ new k8s.apiextensions.CustomResource(
       },
     },
   },
-  { provider },
+  { provider, dependsOn: [certManager] },
 )
 
 const letsencryptStagingIssuerName = 'letsencrypt-staging-issuer'
@@ -1597,57 +1610,7 @@ new k8s.apiextensions.CustomResource(
       },
     },
   },
-  { provider },
-)
-
-const zerosslIssuerName = 'zerossl-issuer'
-const zerosslIssuer = new k8s.core.v1.Secret(
-  zerosslIssuerName,
-  {
-    metadata: {
-      name: zerosslIssuerName,
-      namespace: 'cert-manager',
-    },
-    stringData: {
-      secret: config.zerossl.hmac,
-    },
-  },
-  { provider },
-)
-new k8s.apiextensions.CustomResource(
-  zerosslIssuerName,
-  {
-    apiVersion: 'cert-manager.io/v1',
-    kind: 'ClusterIssuer',
-    metadata: {
-      name: zerosslIssuerName,
-    },
-    spec: {
-      acme: {
-        server: 'https://acme.zerossl.com/v2/DV90',
-        externalAccountBinding: {
-          keyID: config.zerossl.keyId,
-          keySecretRef: {
-            name: zerosslIssuer.metadata.name,
-            key: 'secret',
-          },
-        },
-        privateKeySecretRef: {
-          name: 'zerossl-issuer-account-key',
-        },
-        solvers: [
-          {
-            dns01: {
-              route53: {
-                region: config.route53.region,
-              },
-            },
-          },
-        ],
-      },
-    },
-  },
-  { provider },
+  { provider, dependsOn: [certManager] },
 )
 
 // === EKS === Monitoring ===
@@ -1680,17 +1643,9 @@ const metricsServer = new k8s.helm.v3.Release(
 
 // === EKS === Monitoring === Kube Prometheus Stack ===
 
-const thanosBucketName = s3nm('thanos-bucket')
-const thanosBucket = new aws.s3.Bucket(thanosBucketName, {
-  bucket: thanosBucketName,
-  acl: 'private',
-  serverSideEncryptionConfiguration: {
-    rule: {
-      applyServerSideEncryptionByDefault: {
-        sseAlgorithm: 'AES256',
-      },
-    },
-  },
+const thanosBucketName = nm('thanos-metrics')
+const thanosBucket = new aws.s3.BucketV2(thanosBucketName, {
+  bucketPrefix: `${thanosBucketName}-`,
 })
 const thanosUser = new aws.iam.User(nm('thanos-user'))
 const thanosAccessKey = new aws.iam.AccessKey(nm('thanos-access-key'), {
@@ -1874,27 +1829,29 @@ const kubePrometheusStack = new k8s.helm.v3.Release(
       },
     },
   },
-  { provider },
+  { provider, dependsOn: [certManager] },
 )
 
 // === EKS === Monitoring === Loki ===
 
 const lokiBuckets = ['chunks', 'ruler', 'admin'].reduce(
-  (acc, lokiBucketName) => ({
-    ...acc,
-    [lokiBucketName]: new aws.s3.BucketV2(s3nm(`loki-${lokiBucketName}`), {
-      bucket: s3nm(`loki-${lokiBucketName}`),
-    }),
-  }),
+  (acc, lokiBucketName) => {
+    const bucketName = nm(`loki-${lokiBucketName}`)
+    return {
+      ...acc,
+      [lokiBucketName]: new aws.s3.BucketV2(bucketName, {
+        bucketPrefix: `${bucketName}-`,
+      }),
+    }
+  },
   {} as Record<string, aws.s3.BucketV2>,
 )
-export const lokiBucketsMap = Object.fromEntries(
+const lokiBucketsMap = Object.fromEntries(
   Object.entries(lokiBuckets).map(([lokiBucketName, { bucket }]) => [lokiBucketName, bucket]),
 )
-
-const lokiUser = new aws.iam.User(nm('loki-user'))
-const lokiAccessKey = new aws.iam.AccessKey(nm('loki-access-key'), {
-  user: lokiUser.name,
+const lokiS3RoleName = nm('loki-role')
+const lokiS3Role = new aws.iam.Role(lokiS3RoleName, {
+  assumeRolePolicy: assumeRoleForEKSPodIdentity(),
 })
 const lokiS3AccessPolicy = new aws.iam.Policy(nm('loki-policy'), {
   policy: pulumi.all(Object.values(lokiBucketsMap)).apply((buckets) =>
@@ -1916,9 +1873,15 @@ const lokiS3AccessPolicy = new aws.iam.Policy(nm('loki-policy'), {
       .then((doc) => doc.json),
   ),
 })
-new aws.iam.UserPolicyAttachment(nm('loki-user-policy'), {
+new aws.iam.RolePolicyAttachment(nm('loki-role-policy'), {
   policyArn: lokiS3AccessPolicy.arn,
-  user: lokiUser,
+  role: lokiS3Role,
+})
+new aws.eks.PodIdentityAssociation(nm('loki-pod-identity'), {
+  clusterName: eksCluster.name,
+  namespace: monitoringNamespace.metadata.name,
+  serviceAccount: 'loki',
+  roleArn: lokiS3Role.arn,
 })
 
 const loki = new k8s.helm.v3.Release(
@@ -1933,12 +1896,14 @@ const loki = new k8s.helm.v3.Release(
     },
     values: {
       chunksCache: {
-        allocatedMemory: '512',
-        writebackSizeLimit: '64MB',
+        // allocatedMemory: '512',
+        // writebackSizeLimit: '64MB',
+        enabled: false,
       },
       resultsCache: {
-        allocatedMemory: '128',
-        writebackSizeLimit: '64MB',
+        enabled: false,
+        // allocatedMemory: '128',
+        // writebackSizeLimit: '64MB',
       },
       write: {
         resources: {
@@ -1993,12 +1958,7 @@ const loki = new k8s.helm.v3.Release(
         storage: {
           type: 's3',
           s3: {
-            endpoint: 's3.amazonaws.com',
             region: regionId,
-            secretAccessKey: lokiAccessKey.secret,
-            accessKeyId: lokiAccessKey.id,
-            s3ForcePathStyle: false,
-            insecure: false,
           },
           bucketNames: lokiBucketsMap,
         },
@@ -2075,17 +2035,9 @@ new k8s.storage.v1.StorageClass(
 
 // === EKS === Velero ===
 
-const veleroBucketName = s3nm('velero')
-const veleroBucket = new aws.s3.Bucket(veleroBucketName, {
-  bucket: veleroBucketName,
-  acl: 'private',
-  serverSideEncryptionConfiguration: {
-    rule: {
-      applyServerSideEncryptionByDefault: {
-        sseAlgorithm: 'AES256',
-      },
-    },
-  },
+const veleroBucketName = nm('velero-backup')
+const veleroBucket = new aws.s3.BucketV2(veleroBucketName, {
+  bucketPrefix: `${veleroBucketName}-`,
 })
 const veleroBackupRoleName = nm('velero-backup-role')
 const veleroBackupRole = new aws.iam.Role(veleroBackupRoleName, {
@@ -2228,18 +2180,15 @@ const argocd = new k8s.helm.v3.Release(
         secret: {
           argocdServerAdminPassword: argocdPassword.bcryptHash,
         },
-        repositories: {
-          sdp: {
-            url: config.git.repo,
-            username: config.git.username,
-            password: config.git.password,
-          },
-        },
       },
       global: {
         domain: config.argocd.host,
       },
       server: {
+        autoscaling: {
+          enabled: true,
+          minReplicas: 2,
+        },
         ingress: {
           enabled: true,
           annotations: {
@@ -2285,7 +2234,7 @@ new k8s.apiextensions.CustomResource(
     kind: 'AppProject',
     metadata: {
       name: project,
-      namespace: argocdNamespace.metadata.name,
+      namespace: argocd.namespace,
       finalizers: ['resources-finalizer.argocd.argoproj.io'],
     },
     spec: {
@@ -2333,7 +2282,6 @@ function registerHelmRelease(release: k8s.helm.v3.Release, project: string) {
       }
     })
 
-    // TODO: use server side apply and diff by default once https://github.com/argoproj/argo-cd/issues/18548 is resolved
     new k8s.apiextensions.CustomResource(
       nm(name),
       {
@@ -2341,7 +2289,7 @@ function registerHelmRelease(release: k8s.helm.v3.Release, project: string) {
         kind: 'Application',
         metadata: {
           name,
-          namespace: 'argocd',
+          namespace: argocd.namespace,
           annotations: {
             'argocd.argoproj.io/compare-options': 'ServerSideDiff=true,IncludeMutationWebhook=true',
           },
@@ -2411,6 +2359,5 @@ export const clusterSecretStores = {
 export const clusterIssuers = {
   letsencryptProd: letsencryptProdIssuerName,
   letsencryptStaging: letsencryptStagingIssuerName,
-  zerossl: zerosslIssuerName,
 }
 export { kubeconfig, publicRouteTable, privateRouteTable, vpc, eksCluster, kmsKey, argocdPassword, grafanaPassword }

@@ -5,14 +5,6 @@ const project = getProject()
 const stack = getStack()
 const pulumi = { organization, project, stack }
 
-const gitConfig = new Config('git')
-const git = {
-  repo: gitConfig.require('repo'),
-  path: gitConfig.require('path'),
-  username: gitConfig.require('username'),
-  password: gitConfig.requireSecret('password'),
-}
-
 const defaults = {
   tagsAll: Object.fromEntries(Object.entries(pulumi).map(([k, v]) => [`pulumi:${k}`, v])),
   pod: {
@@ -49,17 +41,6 @@ const route53 = {
   region: route53Config.require('region'),
 }
 
-const zerosslConfig = new Config('zerossl')
-const zerossl = {
-  keyId: zerosslConfig.require('kid'),
-  hmac: zerosslConfig.requireSecret('hmac'),
-}
-
-const s3Config = new Config('s3')
-const s3 = {
-  bucketSuffix: s3Config.require('bucketSuffix'),
-}
-
 // TODO: move hard-coded configs in index.ts to here
 
-export { git, pulumi, grafana, defaults, argocd, admin, route53, zerossl, s3 }
+export { pulumi, grafana, defaults, argocd, admin, route53 }

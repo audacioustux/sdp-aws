@@ -1,19 +1,2 @@
-config:
-  admin:email: sys.admin@coderstrust.com
-  argocd:host: cd.coderstrust.global
-  aws:region: ap-south-1
-  git:password:
-    secure: AAABAMrdiPw84LEyqs9BDkP1xv4G+cjHN6TFU7LhClmTqM8Dn6w7zaWkyfADUjhCISQW6/ywQXtH7p9OOYcpG+H7BSwlDl7Cx05Kmnsq9vh8V2b8UHCzM1nAybxY8GxbVq9EIdBvZ/FvIkXxYJDvex868N7cirM5avXYaTU=
-  git:path: .
-  git:repo: https://github.com/audacioustux/sdp-aws
-  git:username: audacioustux
-  grafana:host: gr.coderstrust.global
-  route53:region: ap-south-1
-  route53:zones:
-    - coderstrust.com
-    - superkids.ac
-    - coderstrust.global
-  s3:bucketSuffix: coderstrust
-  zerossl:hmac:
-    secure: AAABALzKbamokubEgCw8QveEWM1FTrxDENyR213JSm+mjc58eXNeRfkIjt/cd+G6D3Bpp/3QHJf10KBHF3UUS6ZdUCwadnWyEILMybVkjqWRTsaTH++jnjtRrDg7QxD/HwHTkc5JuWrv+GOd0/0pTXjrxtph2w==
-  zerossl:kid: Us6B_N5640rXXuCezx7yeQ
+environment:
+  - sdp-aws-prod
