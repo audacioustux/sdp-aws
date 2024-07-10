@@ -223,9 +223,9 @@ const defaultNodeGroup = new eks.ManagedNodeGroup(defaultNodeGroupName, {
   // NOTE: t4g instances has larger Pod limit
   instanceTypes: ['t4g.large'],
   scalingConfig: {
-    minSize: 2,
-    maxSize: 2,
-    desiredSize: 2,
+    minSize: 1,
+    maxSize: 1,
+    desiredSize: 1,
   },
   taints: [
     {
@@ -1046,7 +1046,7 @@ const karpenter = new k8s.helm.v3.Release(
     version: karpenterCRD.version,
     maxHistory: 1,
     values: {
-      replicas: 2,
+      replicas: 1,
       settings: {
         clusterName: eksCluster.name,
         interruptionQueue: EC2InterruptionQueue.name,
@@ -1140,8 +1140,11 @@ new k8s.apiextensions.CustomResource(
             name: defaultNodeClass.metadata.name,
           },
           kubelet: {
-            podsPerCore: 20,
-            maxPods: 110,
+            kubeReserved: {
+              memory: '256Mi',
+            },
+            podsPerCore: 40,
+            maxPods: 150,
           },
           startupTaints: [
             {
