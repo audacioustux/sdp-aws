@@ -18,7 +18,7 @@ tasks:
     cmd: pnpm run format
 
   up:
-    deps: [deps]
+    deps: [deps, ecr:login]
     env:
       PULUMI_K8S_ENABLE_SERVER_SIDE_APPLY: true
       PULUMI_K8S_CLIENT_TIMEOUT: 180

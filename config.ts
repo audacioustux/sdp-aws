@@ -41,6 +41,12 @@ const route53 = {
   region: route53Config.require('region'),
 }
 
+const dockerRegistryConfig = new Config('dockerio')
+const dockerRegistry = {
+  username: dockerRegistryConfig.require('username'),
+  token: dockerRegistryConfig.requireSecret('token'),
+}
+
 // TODO: move hard-coded configs in index.ts to here
 
-export { pulumi, grafana, defaults, argocd, admin, route53 }
+export { pulumi, grafana, defaults, argocd, admin, route53, dockerRegistry }

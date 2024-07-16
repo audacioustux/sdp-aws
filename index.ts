@@ -166,6 +166,19 @@ new aws.kms.Alias(kmsKeyName, {
 
 // === EKS === Cluster ===
 
+const ecrPullThroughPolicy = new aws.iam.Policy(nm('ecr-pull-through-policy'), {
+  policy: pulumi.output({
+    Version: '2012-10-17',
+    Statement: [
+      {
+        Effect: 'Allow',
+        Action: ['ecr:CreateRepository', 'ecr:ReplicateImage', 'ecr:BatchImportUpstreamImage'],
+        Resource: '*',
+      },
+    ],
+  }),
+})
+
 const eksInstanceRole = new aws.iam.Role(nm('eks-instance-role'), {
   assumeRolePolicy: aws.iam.assumeRolePolicyForPrincipal({
     Service: 'ec2.amazonaws.com',
@@ -175,8 +188,10 @@ const eksInstanceRole = new aws.iam.Role(nm('eks-instance-role'), {
     'arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy',
     'arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly',
     'arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore',
+    ecrPullThroughPolicy.arn,
   ],
 })
+// TODO: add kyverno policy to update image registry to ECR (pull through) automatically
 
 const eksClusterName = nm('eks')
 const {
@@ -223,9 +238,9 @@ const defaultNodeGroup = new eks.ManagedNodeGroup(defaultNodeGroupName, {
   // NOTE: t4g instances has larger Pod limit
   instanceTypes: ['t4g.large'],
   scalingConfig: {
-    minSize: 1,
-    maxSize: 1,
-    desiredSize: 1,
+    minSize: 2,
+    maxSize: 2,
+    desiredSize: 2,
   },
   taints: [
     {
@@ -238,18 +253,23 @@ const defaultNodeGroup = new eks.ManagedNodeGroup(defaultNodeGroupName, {
 
 // === EKS === Limit Range === Kube System ===
 
-const kubeSystemLimitRange = new k8s.core.v1.LimitRange(
+new k8s.core.v1.LimitRange(
   nm('kube-system-limit-range'),
   {
     metadata: {
-      name: 'default-limit-range',
+      name: 'kube-system-limits',
       namespace: 'kube-system',
     },
     spec: {
       limits: [
         {
-          default: config.defaults.pod.resources.limits,
-          defaultRequest: config.defaults.pod.resources.requests,
+          default: {
+            memory: '512Mi',
+          },
+          defaultRequest: {
+            memory: '256Mi',
+            cpu: '50m',
+          },
           type: 'Container',
         },
       ],
@@ -291,14 +311,6 @@ const cilium = new k8s.helm.v3.Release(
         qps: 50,
       },
       k8sServiceHost: cluster.endpoint.apply((endpoint) => endpoint.replace('https://', '')),
-      resources: {
-        requests: {
-          memory: '256Mi',
-        },
-        limits: {
-          memory: '512Mi',
-        },
-      },
       bandwidthManager: {
         enabled: true,
         bbr: true,
@@ -1046,7 +1058,7 @@ const karpenter = new k8s.helm.v3.Release(
     version: karpenterCRD.version,
     maxHistory: 1,
     values: {
-      replicas: 1,
+      replicas: 2,
       settings: {
         clusterName: eksCluster.name,
         interruptionQueue: EC2InterruptionQueue.name,
@@ -1056,16 +1068,6 @@ const karpenter = new k8s.helm.v3.Release(
       },
       serviceMonitor: {
         enabled: true,
-      },
-      controller: {
-        resources: {
-          requests: {
-            memory: '128Mi',
-          },
-          limits: {
-            memory: '512Mi',
-          },
-        },
       },
     },
     timeout: 60 * 30,
@@ -1186,6 +1188,37 @@ const vpa = new k8s.helm.v3.Release(
   { provider },
 )
 
+// === EKS === ECR pull through cache ===
+
+export const ecrK8sPullThroughCacheRule = new aws.ecr.PullThroughCacheRule(nm('ecr-k8s-pull-through-cache'), {
+  upstreamRegistryUrl: 'registry.k8s.io',
+  ecrRepositoryPrefix: 'registry.k8s.io',
+})
+
+const dockerioSecretName = 'ecr-pullthroughcache/docker-hub'
+const dockerioSecret = new aws.secretsmanager.Secret(nm(dockerioSecretName), {
+  name: dockerioSecretName,
+})
+new aws.secretsmanager.SecretVersion(nm(dockerioSecretName), {
+  secretId: dockerioSecret.id,
+  secretString: config.dockerRegistry.token.apply((accessToken) =>
+    JSON.stringify({
+      username: config.dockerRegistry.username,
+      accessToken,
+    }),
+  ),
+})
+export const ecrDockerIoPullThroughCacheRule = new aws.ecr.PullThroughCacheRule(
+  nm('ecr-docker-io-pull-through-cache'),
+  {
+    upstreamRegistryUrl: 'registry-1.docker.io',
+    ecrRepositoryPrefix: 'docker.io',
+    credentialArn: dockerioSecret.arn,
+  },
+)
+
+const ecrPrivateRegistryUrl = `${accountId}.dkr.ecr.${regionId}.amazonaws.com`
+
 // === EKS === Kyverno ===
 
 const kyvernoNamespace = new k8s.core.v1.Namespace(nm('kyverno'), { metadata: { name: 'kyverno' } }, { provider })
@@ -1200,6 +1233,12 @@ const kyverno = new k8s.helm.v3.Release(
       repo: 'https://kyverno.github.io/kyverno/',
     },
     maxHistory: 1,
+    values: {
+      config: {
+        defaultRegistry: pulumi.interpolate`${ecrPrivateRegistryUrl}/${ecrDockerIoPullThroughCacheRule.ecrRepositoryPrefix}`,
+        enableDefaultRegistryMutation: true,
+      },
+    },
   },
   { provider },
 )
@@ -1209,7 +1248,7 @@ const kyverno = new k8s.helm.v3.Release(
 
 // === EKS === Limit Range === All Namespaces ===
 
-const addNamespaceLimitRange = 'add-limit-range-to-namespaces'
+const addNamespaceLimitRange = 'add-namespace-limit-range'
 new k8s.apiextensions.CustomResource(
   nm(addNamespaceLimitRange),
   {
@@ -1218,7 +1257,7 @@ new k8s.apiextensions.CustomResource(
     metadata: {
       name: addNamespaceLimitRange,
       annotations: {
-        'policies.kyverno.io/title': 'Add LimitRange for all Namespaces',
+        'policies.kyverno.io/title': 'Add LimitRange to Namespaces',
         'policies.kyverno.io/category': 'Other',
         'policies.kyverno.io/severity': 'medium',
         'kyverno.io/kyverno-version': kyverno.version,
@@ -1241,12 +1280,90 @@ new k8s.apiextensions.CustomResource(
           generate: {
             apiVersion: 'v1',
             kind: 'LimitRange',
-            name: kubeSystemLimitRange.metadata.name,
+            name: '{{request.object.metadata.name}}-limits',
             namespace: '{{request.object.metadata.name}}',
             synchronize: true,
             data: {
-              spec: kubeSystemLimitRange.spec,
+              spec: {
+                limits: [
+                  {
+                    default: config.defaults.pod.resources.limits,
+                    defaultRequest: config.defaults.pod.resources.requests,
+                    type: 'Container',
+                  },
+                ],
+              },
             },
+          },
+        },
+      ],
+    },
+  },
+  { provider, dependsOn: [kyverno] },
+)
+
+// ===
+
+const changeContainerImageRegistryPolicyName = 'change-container-image-registry'
+new k8s.apiextensions.CustomResource(
+  nm(changeContainerImageRegistryPolicyName),
+  {
+    apiVersion: 'kyverno.io/v1',
+    kind: 'ClusterPolicy',
+    metadata: {
+      name: changeContainerImageRegistryPolicyName,
+      annotations: {
+        'policies.kyverno.io/title': 'Change Container Image Registry',
+        'policies.kyverno.io/category': 'Other',
+        'policies.kyverno.io/severity': 'medium',
+        'kyverno.io/kyverno-version': kyverno.version,
+        'kyverno.io/kubernetes-version': eksCluster.version,
+        'policies.kyverno.io/subject': 'ImageRegistry',
+        'policies.kyverno.io/description': `This policy changes the registry of the container image to the ECR pull through cache.`,
+      },
+    },
+    spec: {
+      rules: [
+        {
+          name: changeContainerImageRegistryPolicyName,
+          match: {
+            any: [
+              {
+                resources: {
+                  kinds: ['Pod'],
+                },
+              },
+            ],
+          },
+          mutate: {
+            foreach: [
+              {
+                list: 'request.object.spec.containers',
+                patchStrategicMerge: {
+                  spec: {
+                    containers: [
+                      {
+                        name: '{{ element.name }}',
+                        image: pulumi.interpolate`{{ regex_replace_all('^(docker.io|registry.k8s.io)/(.*)', '{{ images.containers."{{element.name}}".registry || "docker.io" }}/{{ images.containers."{{element.name}}".path}}:{{images.containers."{{element.name}}".tag}}', '${ecrPrivateRegistryUrl}/$1/$2') }}`,
+                      },
+                    ],
+                  },
+                },
+              },
+              {
+                list: 'request.object.spec.initContainers || []',
+                patchStrategicMerge: {
+                  spec: {
+                    initContainers: [
+                      {
+                        name: '{{ element.name }}',
+                        image: pulumi.interpolate`{{ regex_replace_all('^(docker.io|registry.k8s.io)/(.*)', '{{ element.image }}', '${ecrPrivateRegistryUrl}/$1/$2') }}`,
+                      },
+                    ],
+                  },
+                },
+              },
+            ],
           },
         },
       ],
@@ -1892,12 +2009,19 @@ const loki = new k8s.helm.v3.Release(
   {
     name: 'loki',
     chart: 'loki',
-    version: '6.6.4',
+    version: '6.6.6',
     namespace: 'monitoring',
     repositoryOpts: {
       repo: 'https://grafana.github.io/helm-charts',
     },
     values: {
+      // TODO: fix gateway svc not being accessible properly from grafana
+      // NOTE: https://github.com/grafana/loki/issues/12963
+      gateway: {
+        autoscaling: {
+          enabled: false,
+        },
+      },
       chunksCache: {
         // allocatedMemory: '512',
         // writebackSizeLimit: '64MB',
@@ -2188,10 +2312,7 @@ const argocd = new k8s.helm.v3.Release(
         domain: config.argocd.host,
       },
       server: {
-        autoscaling: {
-          enabled: true,
-          minReplicas: 2,
-        },
+        replicas: 2,
         ingress: {
           enabled: true,
           annotations: {
@@ -2214,12 +2335,16 @@ const argocd = new k8s.helm.v3.Release(
         },
       },
       repoServer: {
+        autoscaling: {
+          enabled: true,
+          minReplicas: 2,
+        },
         resources: {
           requests: {
-            memory: '128Mi',
+            memory: '256Mi',
           },
           limits: {
-            memory: '256Mi',
+            memory: '512Mi',
           },
         },
       },
