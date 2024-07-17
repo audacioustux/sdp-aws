@@ -1302,7 +1302,7 @@ new k8s.apiextensions.CustomResource(
   { provider, dependsOn: [kyverno] },
 )
 
-// ===
+// === EKS === Change Container Image Registry ===
 
 const changeContainerImageRegistryPolicyName = 'change-container-image-registry'
 pulumi.interpolate`{{ regex_replace_all('^(docker.io|registry.k8s.io)/(.*)', '{{ images.containers."{{element.name}}".registry || "docker.io" }}/{{ images.containers."{{element.name}}".path}}:{{images.containers."{{element.name}}".tag}}', '${ecrPrivateRegistryUrl}/$1/$2') }}`.apply(
