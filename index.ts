@@ -1305,74 +1305,71 @@ new k8s.apiextensions.CustomResource(
 // === EKS === Change Container Image Registry ===
 
 const changeContainerImageRegistryPolicyName = 'change-container-image-registry'
-pulumi.interpolate`{{ regex_replace_all('^(docker.io|registry.k8s.io)/(.*)', '{{ images.containers."{{element.name}}".registry || "docker.io" }}/{{ images.containers."{{element.name}}".path}}:{{images.containers."{{element.name}}".tag}}', '${ecrPrivateRegistryUrl}/$1/$2') }}`.apply(
-  (image) =>
-    new k8s.apiextensions.CustomResource(
-      nm(changeContainerImageRegistryPolicyName),
-      {
-        apiVersion: 'kyverno.io/v1',
-        kind: 'ClusterPolicy',
-        metadata: {
+new k8s.apiextensions.CustomResource(
+  nm(changeContainerImageRegistryPolicyName),
+  {
+    apiVersion: 'kyverno.io/v1',
+    kind: 'ClusterPolicy',
+    metadata: {
+      name: changeContainerImageRegistryPolicyName,
+      annotations: {
+        'policies.kyverno.io/title': 'Change Container Image Registry',
+        'policies.kyverno.io/category': 'Other',
+        'policies.kyverno.io/severity': 'medium',
+        'kyverno.io/kyverno-version': kyverno.version,
+        'kyverno.io/kubernetes-version': eksCluster.version,
+        'policies.kyverno.io/subject': 'ImageRegistry',
+        'policies.kyverno.io/description': `This policy changes the registry of the container image to the ECR pull through cache.`,
+      },
+    },
+    spec: {
+      rules: [
+        {
           name: changeContainerImageRegistryPolicyName,
-          annotations: {
-            'policies.kyverno.io/title': 'Change Container Image Registry',
-            'policies.kyverno.io/category': 'Other',
-            'policies.kyverno.io/severity': 'medium',
-            'kyverno.io/kyverno-version': kyverno.version,
-            'kyverno.io/kubernetes-version': eksCluster.version,
-            'policies.kyverno.io/subject': 'ImageRegistry',
-            'policies.kyverno.io/description': `This policy changes the registry of the container image to the ECR pull through cache.`,
+          match: {
+            any: [
+              {
+                resources: {
+                  kinds: ['Pod'],
+                },
+              },
+            ],
+          },
+          mutate: {
+            foreach: [
+              {
+                list: 'request.object.spec.containers',
+                patchStrategicMerge: {
+                  spec: {
+                    containers: [
+                      {
+                        name: '{{ element.name }}',
+                        image: pulumi.interpolate`{{ regex_replace_all('^(docker.io|registry.k8s.io)/(.*)', '{{ images.containers."{{element.name}}".registry || "docker.io" }}/{{ images.containers."{{element.name}}".path}}:{{images.containers."{{element.name}}".tag}}', '${ecrPrivateRegistryUrl}/$1/$2') }}`,
+                      },
+                    ],
+                  },
+                },
+              },
+              {
+                list: 'request.object.spec.initContainers || []',
+                patchStrategicMerge: {
+                  spec: {
+                    initContainers: [
+                      {
+                        name: '{{ element.name }}',
+                        image: pulumi.interpolate`{{ regex_replace_all('^(docker.io|registry.k8s.io)/(.*)', '{{ images.initContainers."{{element.name}}".registry || "docker.io" }}/{{ images.initContainers."{{element.name}}".path}}:{{images.initContainers."{{element.name}}".tag}}', '${ecrPrivateRegistryUrl}/$1/$2') }}`,
+                      },
+                    ],
+                  },
+                },
+              },
+            ],
           },
         },
-        spec: {
-          rules: [
-            {
-              name: changeContainerImageRegistryPolicyName,
-              match: {
-                any: [
-                  {
-                    resources: {
-                      kinds: ['Pod'],
-                    },
-                  },
-                ],
-              },
-              mutate: {
-                foreach: [
-                  {
-                    list: 'request.object.spec.containers',
-                    patchStrategicMerge: {
-                      spec: {
-                        containers: [
-                          {
-                            name: '{{ element.name }}',
-                            image,
-                          },
-                        ],
-                      },
-                    },
-                  },
-                  {
-                    list: 'request.object.spec.initContainers || []',
-                    patchStrategicMerge: {
-                      spec: {
-                        initContainers: [
-                          {
-                            name: '{{ element.name }}',
-                            image,
-                          },
-                        ],
-                      },
-                    },
-                  },
-                ],
-              },
-            },
-          ],
-        },
-      },
-      { provider, dependsOn: [kyverno] },
-    ),
+      ],
+    },
+  },
+  { provider, dependsOn: [kyverno] },
 )
 
 // === EKS === Priority Class ===
@@ -2344,6 +2341,7 @@ const argocd = new k8s.helm.v3.Release(
         },
         resources: {
           requests: {
+            cpu: '100m',
             memory: '256Mi',
           },
           limits: {
