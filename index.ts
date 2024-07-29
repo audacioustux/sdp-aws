@@ -1344,7 +1344,7 @@ new k8s.apiextensions.CustomResource(
                     containers: [
                       {
                         name: '{{ element.name }}',
-                        image: pulumi.interpolate`{{ regex_replace_all('^(docker.io|registry.k8s.io)/(.*)', '{{ images.containers."{{element.name}}".registry || "docker.io" }}/{{ images.containers."{{element.name}}".path}}:{{images.containers."{{element.name}}".tag}}', '${ecrPrivateRegistryUrl}/$1/$2') }}`,
+                        image: pulumi.interpolate`{{ regex_replace_all('^(docker.io|registry.k8s.io)/(.*)', '{{ images.containers."{{element.name}}".registry || "docker.io" }}/{{ images.containers."{{element.name}}".path }}:{{ images.containers."{{element.name}}".tag }}', '${ecrPrivateRegistryUrl}/$1/$2') }}`,
                       },
                     ],
                   },
@@ -1357,7 +1357,7 @@ new k8s.apiextensions.CustomResource(
                     initContainers: [
                       {
                         name: '{{ element.name }}',
-                        image: pulumi.interpolate`{{ regex_replace_all('^(docker.io|registry.k8s.io)/(.*)', '{{ images.initContainers."{{element.name}}".registry || "docker.io" }}/{{ images.initContainers."{{element.name}}".path}}:{{images.initContainers."{{element.name}}".tag}}', '${ecrPrivateRegistryUrl}/$1/$2') }}`,
+                        image: pulumi.interpolate`{{ regex_replace_all('^(docker.io|registry.k8s.io)/(.*)', '{{ images.initContainers."{{element.name}}".registry || "docker.io" }}/{{ images.initContainers."{{element.name}}".path }}:{{ images.initContainers."{{element.name}}".tag }}', '${ecrPrivateRegistryUrl}/$1/$2') }}`,
                       },
                     ],
                   },
