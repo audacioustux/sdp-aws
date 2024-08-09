@@ -27,7 +27,10 @@ tasks:
   # miscellanea
   cloc: cloc . --vcs git
   aws:login: aws configure sso --profile default
-  ecr:public:login: aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin 343301376154.dkr.ecr.ap-south-1.amazonaws.com
+  docker:logout: rm ~/.docker/config.json || true # yah i know there's `docker login`
+  ecr:public:login:
+    deps: [docker:logout]
+    cmd: aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin 343301376154.dkr.ecr.ap-south-1.amazonaws.com
   ect:private:login: aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin 147303785652.dkr.ecr.ap-south-1.amazonaws.com
   kubeconfig:update:
     cmd: mkdir -p ~/.kube && pulumi stack -s prod output kubeconfig > ~/.kube/config

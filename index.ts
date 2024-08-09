@@ -1277,6 +1277,11 @@ new k8s.apiextensions.CustomResource(
               kinds: ['Namespace'],
             },
           },
+          exclude: {
+            resources: {
+              names: ['ct-apps-prod'],
+            },
+          },
           generate: {
             apiVersion: 'v1',
             kind: 'LimitRange',
@@ -1304,28 +1309,28 @@ new k8s.apiextensions.CustomResource(
 
 // === EKS === Change Container Image Registry ===
 
-const changeContainerImageRegistryPolicyName = 'change-container-image-registry'
+const prependCustomContainerRegistry = 'prepend-custom-container-registry'
 new k8s.apiextensions.CustomResource(
-  nm(changeContainerImageRegistryPolicyName),
+  nm(prependCustomContainerRegistry),
   {
     apiVersion: 'kyverno.io/v1',
     kind: 'ClusterPolicy',
     metadata: {
-      name: changeContainerImageRegistryPolicyName,
+      name: prependCustomContainerRegistry,
       annotations: {
-        'policies.kyverno.io/title': 'Change Container Image Registry',
+        'policies.kyverno.io/title': 'Prepend Custom Container Registry',
         'policies.kyverno.io/category': 'Other',
         'policies.kyverno.io/severity': 'medium',
         'kyverno.io/kyverno-version': kyverno.version,
         'kyverno.io/kubernetes-version': eksCluster.version,
         'policies.kyverno.io/subject': 'ImageRegistry',
-        'policies.kyverno.io/description': `This policy changes the registry of the container image to the ECR pull through cache.`,
+        'policies.kyverno.io/description': `This policy prepends the ECR private registry URL to all container images in the cluster. This allows the cluster to pull images from the ECR private registry.`,
       },
     },
     spec: {
       rules: [
         {
-          name: changeContainerImageRegistryPolicyName,
+          name: 'prepend-ecr-registry',
           match: {
             any: [
               {
@@ -1714,6 +1719,59 @@ new k8s.apiextensions.CustomResource(
         server: 'https://acme-staging-v02.api.letsencrypt.org/directory',
         privateKeySecretRef: {
           name: 'letsencrypt-staging-issuer-account-key',
+        },
+        solvers: [
+          {
+            selector: {
+              dnsZones: config.route53.zones,
+            },
+            dns01: {
+              route53: {
+                region: config.route53.region,
+              },
+            },
+          },
+        ],
+      },
+    },
+  },
+  { provider, dependsOn: [certManager] },
+)
+
+const zerosslProdIssuerName = 'zerossl-prod-issuer'
+const zerosslProdIssuerSecret = new k8s.core.v1.Secret(
+  zerosslProdIssuerName,
+  {
+    metadata: {
+      name: zerosslProdIssuerName,
+      namespace: 'cert-manager',
+    },
+    stringData: {
+      secret: config.zerossl.secret,
+    },
+  },
+  { provider },
+)
+new k8s.apiextensions.CustomResource(
+  zerosslProdIssuerName,
+  {
+    apiVersion: 'cert-manager.io/v1',
+    kind: 'ClusterIssuer',
+    metadata: {
+      name: zerosslProdIssuerName,
+    },
+    spec: {
+      acme: {
+        server: 'https://acme.zerossl.com/v2/DV90',
+        externalAccountBinding: {
+          keyID: config.zerossl.key,
+          keySecretRef: {
+            name: zerosslProdIssuerSecret.metadata.name,
+            key: 'secret',
+          },
+        },
+        privateKeySecretRef: {
+          name: `${zerosslProdIssuerName}-account-key`,
         },
         solvers: [
           {
@@ -2488,5 +2546,6 @@ export const clusterSecretStores = {
 export const clusterIssuers = {
   letsencryptProd: letsencryptProdIssuerName,
   letsencryptStaging: letsencryptStagingIssuerName,
+  zerosslProd: zerosslProdIssuerName,
 }
 export { kubeconfig, publicRouteTable, privateRouteTable, vpc, eksCluster, kmsKey, argocdPassword, grafanaPassword }

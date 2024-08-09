@@ -47,6 +47,11 @@ const dockerRegistry = {
   token: dockerRegistryConfig.requireSecret('token'),
 }
 
+const zerosslConfig = new Config('zerossl')
+const zerossl = {
+  key: zerosslConfig.require('key'),
+  secret: zerosslConfig.requireSecret('secret'),
+}
 // TODO: move hard-coded configs in index.ts to here
 
-export { pulumi, grafana, defaults, argocd, admin, route53, dockerRegistry }
+export { pulumi, grafana, defaults, argocd, admin, route53, dockerRegistry, zerossl }
