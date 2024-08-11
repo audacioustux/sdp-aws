@@ -1377,6 +1377,77 @@ new k8s.apiextensions.CustomResource(
   { provider, dependsOn: [kyverno] },
 )
 
+const spreadPods = 'spread-pods'
+new k8s.apiextensions.CustomResource(
+  nm(spreadPods),
+  {
+    apiVersion: 'kyverno.io/v1',
+    kind: 'ClusterPolicy',
+    metadata: {
+      name: spreadPods,
+      annotations: {
+        'policies.kyverno.io/title': 'Spread Pods',
+        'policies.kyverno.io/subject': 'Deployment, Pod',
+        'policies.kyverno.io/description': ``,
+      },
+    },
+    spec: {
+      rules: [
+        {
+          name: spreadPods,
+          match: {
+            any: [
+              {
+                resources: {
+                  kinds: ['Deployment'],
+                },
+              },
+            ],
+          },
+          preconditions: {
+            any: [
+              {
+                key: '{{ request.object.spec.replicas }}',
+                operator: 'GreaterThanOrEquals',
+                value: 3,
+              },
+            ],
+          },
+          mutate: {
+            patchStrategicMerge: {
+              spec: {
+                template: {
+                  spec: {
+                    '+(topologySpreadConstraints)': [
+                      {
+                        maxSkew: 1,
+                        topologyKey: 'kubernetes.io/hostname',
+                        whenUnsatisfiable: 'DoNotSchedule',
+                        labelSelector: {
+                          matchLabels: '{{ request.object.metadata.labels }}',
+                        },
+                      },
+                      {
+                        maxSkew: 4,
+                        topologyKey: 'topology.kubernetes.io/zone',
+                        whenUnsatisfiable: 'DoNotSchedule',
+                        labelSelector: {
+                          matchLabels: '{{ request.object.metadata.labels }}',
+                        },
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+          },
+        },
+      ],
+    },
+  },
+  { provider, dependsOn: [kyverno] },
+)
+
 // === EKS === Priority Class ===
 
 const platformPriorityClassBaseline = 1000_000_000 / 2

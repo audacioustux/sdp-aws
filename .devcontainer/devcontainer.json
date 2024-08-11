@@ -45,9 +45,7 @@
     "ghcr.io/audacioustux/devcontainers/pulumi": {},
     "ghcr.io/audacioustux/devcontainers/k9s": {},
     "ghcr.io/audacioustux/devcontainers/cilium": {},
-    "ghcr.io/audacioustux/devcontainers/taskfile": {},
-    "ghcr.io/audacioustux/devcontainers/argo:1": {},
-    "ghcr.io/devcontainers-contrib/features/sops:1.0.14": {}
+    "ghcr.io/audacioustux/devcontainers/taskfile": {}
   },
   "updateContentCommand": "git clean -Xdf --exclude='!**/*.env'"
 }
