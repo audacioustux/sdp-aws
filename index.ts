@@ -1388,7 +1388,7 @@ new k8s.apiextensions.CustomResource(
       annotations: {
         'policies.kyverno.io/title': 'Spread Pods',
         'policies.kyverno.io/subject': 'Deployment, Pod',
-        'policies.kyverno.io/description': ``,
+        'policies.kyverno.io/description': `This policy ensures that Pods are spread across Nodes in the cluster. This is important for high availability and fault tolerance.`,
       },
     },
     spec: {
@@ -1409,7 +1409,7 @@ new k8s.apiextensions.CustomResource(
               {
                 key: '{{ request.object.spec.replicas }}',
                 operator: 'GreaterThanOrEquals',
-                value: 3,
+                value: 2,
               },
             ],
           },
