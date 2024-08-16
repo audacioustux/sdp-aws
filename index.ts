@@ -1409,7 +1409,7 @@ new k8s.apiextensions.CustomResource(
               {
                 key: '{{ request.object.spec.replicas }}',
                 operator: 'GreaterThanOrEquals',
-                value: 2,
+                value: 3,
               },
             ],
           },
@@ -1421,15 +1421,15 @@ new k8s.apiextensions.CustomResource(
                     '+(topologySpreadConstraints)': [
                       {
                         maxSkew: 1,
-                        topologyKey: 'kubernetes.io/hostname',
+                        topologyKey: 'node',
                         whenUnsatisfiable: 'DoNotSchedule',
                         labelSelector: {
                           matchLabels: '{{ request.object.metadata.labels }}',
                         },
                       },
                       {
-                        maxSkew: 4,
-                        topologyKey: 'topology.kubernetes.io/zone',
+                        maxSkew: 2,
+                        topologyKey: 'zone',
                         whenUnsatisfiable: 'DoNotSchedule',
                         labelSelector: {
                           matchLabels: '{{ request.object.metadata.labels }}',
