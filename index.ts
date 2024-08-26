@@ -1344,6 +1344,15 @@ new k8s.apiextensions.CustomResource(
             foreach: [
               {
                 list: 'request.object.spec.containers',
+                preconditions: {
+                  all: [
+                    {
+                      key: "{{ regex_match('^(docker.io/.*|registry.k8s.io)/(.*)', '{{ element.image }}') }}",
+                      operator: 'Equals',
+                      value: true,
+                    },
+                  ],
+                },
                 patchStrategicMerge: {
                   spec: {
                     containers: [
@@ -1357,6 +1366,15 @@ new k8s.apiextensions.CustomResource(
               },
               {
                 list: 'request.object.spec.initContainers || []',
+                preconditions: {
+                  all: [
+                    {
+                      key: "{{ regex_match('^(docker.io/.*|registry.k8s.io)/(.*)', '{{ element.image }}') }}",
+                      operator: 'Equals',
+                      value: true,
+                    },
+                  ],
+                },
                 patchStrategicMerge: {
                   spec: {
                     initContainers: [
@@ -1394,7 +1412,7 @@ new k8s.apiextensions.CustomResource(
     spec: {
       rules: [
         {
-          name: spreadPods,
+          name: 'spread-deployment-pods',
           match: {
             any: [
               {
@@ -1409,7 +1427,7 @@ new k8s.apiextensions.CustomResource(
               {
                 key: '{{ request.object.spec.replicas }}',
                 operator: 'GreaterThanOrEquals',
-                value: 3,
+                value: 2,
               },
             ],
           },
@@ -1421,19 +1439,68 @@ new k8s.apiextensions.CustomResource(
                     '+(topologySpreadConstraints)': [
                       {
                         maxSkew: 1,
-                        topologyKey: 'node',
+                        minDomains: 2,
+                        topologyKey: 'kubernetes.io/hostname',
                         whenUnsatisfiable: 'DoNotSchedule',
-                        labelSelector: {
-                          matchLabels: '{{ request.object.metadata.labels }}',
-                        },
+                        labelSelector: '{{request.object.spec.selector}}',
+                        matchLabelKeys: ['pod-template-hash'],
                       },
                       {
-                        maxSkew: 2,
-                        topologyKey: 'zone',
+                        maxSkew: 1,
+                        minDomains: 2,
+                        topologyKey: 'topology.kubernetes.io/zone',
                         whenUnsatisfiable: 'DoNotSchedule',
-                        labelSelector: {
-                          matchLabels: '{{ request.object.metadata.labels }}',
-                        },
+                        labelSelector: '{{request.object.spec.selector}}',
+                        matchLabelKeys: ['pod-template-hash'],
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+          },
+        },
+        {
+          name: 'spread-statefulset-pods',
+          match: {
+            any: [
+              {
+                resources: {
+                  kinds: ['StatefulSet'],
+                },
+              },
+            ],
+          },
+          preconditions: {
+            any: [
+              {
+                key: '{{ request.object.spec.replicas }}',
+                operator: 'GreaterThanOrEquals',
+                value: 2,
+              },
+            ],
+          },
+          mutate: {
+            patchStrategicMerge: {
+              spec: {
+                template: {
+                  spec: {
+                    '+(topologySpreadConstraints)': [
+                      {
+                        maxSkew: 1,
+                        minDomains: 2,
+                        topologyKey: 'kubernetes.io/hostname',
+                        whenUnsatisfiable: 'DoNotSchedule',
+                        labelSelector: '{{request.object.spec.selector}}',
+                        matchLabelKeys: ['pod-template-hash'],
+                      },
+                      {
+                        maxSkew: 1,
+                        minDomains: 2,
+                        topologyKey: 'topology.kubernetes.io/zone',
+                        whenUnsatisfiable: 'DoNotSchedule',
+                        labelSelector: '{{request.object.spec.selector}}',
+                        matchLabelKeys: ['controller-revision-hash'],
                       },
                     ],
                   },
