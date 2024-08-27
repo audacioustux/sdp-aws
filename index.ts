@@ -1343,6 +1343,15 @@ new k8s.apiextensions.CustomResource(
           mutate: {
             foreach: ['ephemeralContainers', 'initContainers', 'containers'].map((key) => ({
               list: `request.object.spec.${key}[]`,
+              preconditions: {
+                all: [
+                  {
+                    key: "{{ regex_match('^(docker.io|registry.k8s.io)/(.*)', '{{ element.image }}') }}",
+                    operator: 'Equals',
+                    value: true,
+                  },
+                ],
+              },
               patchStrategicMerge: {
                 spec: {
                   [key]: [
