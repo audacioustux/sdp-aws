@@ -1425,7 +1425,7 @@ new k8s.apiextensions.CustomResource(
                         maxSkew: 2,
                         minDomains: 2,
                         topologyKey: 'topology.kubernetes.io/zone',
-                        whenUnsatisfiable: 'ScheduleAnyway',
+                        whenUnsatisfiable: 'DoNotSchedule',
                         labelSelector: '{{request.object.spec.selector}}',
                         matchLabelKeys: ['pod-template-hash'],
                       },
