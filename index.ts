@@ -1307,30 +1307,30 @@ new k8s.apiextensions.CustomResource(
   { provider, dependsOn: [kyverno] },
 )
 
-// === EKS === Change Container Image Registry ===
+// === EKS === Use ECR Pull Through Cache ===
 
-const prependCustomContainerRegistry = 'prepend-custom-container-registry'
+const useECRPullThroughCache = 'use-ecr-pull-through-cache'
 new k8s.apiextensions.CustomResource(
-  nm(prependCustomContainerRegistry),
+  nm(useECRPullThroughCache),
   {
     apiVersion: 'kyverno.io/v1',
     kind: 'ClusterPolicy',
     metadata: {
-      name: prependCustomContainerRegistry,
+      name: useECRPullThroughCache,
       annotations: {
-        'policies.kyverno.io/title': 'Prepend Custom Container Registry',
+        'policies.kyverno.io/title': 'Use ECR Pull Through Cache',
         'policies.kyverno.io/category': 'Other',
         'policies.kyverno.io/severity': 'medium',
         'kyverno.io/kyverno-version': kyverno.version,
         'kyverno.io/kubernetes-version': eksCluster.version,
         'policies.kyverno.io/subject': 'ImageRegistry',
-        'policies.kyverno.io/description': `This policy prepends the ECR private registry URL to all container images in the cluster. This allows the cluster to pull images from the ECR private registry.`,
+        'policies.kyverno.io/description': `This policy ensures that all Pods use the ECR Pull Through Cache to reduce latency and improve performance.`,
       },
     },
     spec: {
       rules: [
         {
-          name: 'prepend-ecr-registry',
+          name: useECRPullThroughCache,
           match: {
             any: [
               {
@@ -1341,52 +1341,19 @@ new k8s.apiextensions.CustomResource(
             ],
           },
           mutate: {
-            foreach: [
-              {
-                list: 'request.object.spec.containers',
-                preconditions: {
-                  all: [
+            foreach: ['ephemeralContainers', 'initContainers', 'containers'].map((key) => ({
+              list: `request.object.spec.${key}[]`,
+              patchStrategicMerge: {
+                spec: {
+                  [key]: [
                     {
-                      key: "{{ regex_match('^(docker.io/.*|registry.k8s.io)/(.*)', '{{ element.image }}') }}",
-                      operator: 'Equals',
-                      value: true,
+                      name: '{{ element.name }}',
+                      image: pulumi.interpolate`{{ regex_replace_all('^([^/]*)/(.*)', '{{ element.image }}', '${ecrPrivateRegistryUrl}/$1/$2') }}`,
                     },
                   ],
                 },
-                patchStrategicMerge: {
-                  spec: {
-                    containers: [
-                      {
-                        name: '{{ element.name }}',
-                        image: pulumi.interpolate`{{ regex_replace_all('^(docker.io|registry.k8s.io)/(.*)', '{{ images.containers."{{element.name}}".registry || "docker.io" }}/{{ images.containers."{{element.name}}".path }}:{{ images.containers."{{element.name}}".tag }}', '${ecrPrivateRegistryUrl}/$1/$2') }}`,
-                      },
-                    ],
-                  },
-                },
               },
-              {
-                list: 'request.object.spec.initContainers || []',
-                preconditions: {
-                  all: [
-                    {
-                      key: "{{ regex_match('^(docker.io/.*|registry.k8s.io)/(.*)', '{{ element.image }}') }}",
-                      operator: 'Equals',
-                      value: true,
-                    },
-                  ],
-                },
-                patchStrategicMerge: {
-                  spec: {
-                    initContainers: [
-                      {
-                        name: '{{ element.name }}',
-                        image: pulumi.interpolate`{{ regex_replace_all('^(docker.io|registry.k8s.io)/(.*)', '{{ images.initContainers."{{element.name}}".registry || "docker.io" }}/{{ images.initContainers."{{element.name}}".path }}:{{ images.initContainers."{{element.name}}".tag }}', '${ecrPrivateRegistryUrl}/$1/$2') }}`,
-                      },
-                    ],
-                  },
-                },
-              },
-            ],
+            })),
           },
         },
       ],
