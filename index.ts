@@ -1342,7 +1342,7 @@ new k8s.apiextensions.CustomResource(
           },
           mutate: {
             foreach: ['ephemeralContainers', 'initContainers', 'containers'].map((key) => ({
-              list: `request.object.spec.${key}[]`,
+              list: `request.object.spec.${key} || []`,
               preconditions: {
                 all: [
                   {
