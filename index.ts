@@ -1422,10 +1422,10 @@ new k8s.apiextensions.CustomResource(
                         matchLabelKeys: ['pod-template-hash'],
                       },
                       {
-                        maxSkew: 1,
+                        maxSkew: 2,
                         minDomains: 2,
                         topologyKey: 'topology.kubernetes.io/zone',
-                        whenUnsatisfiable: 'DoNotSchedule',
+                        whenUnsatisfiable: 'ScheduleAnyway',
                         labelSelector: '{{request.object.spec.selector}}',
                         matchLabelKeys: ['pod-template-hash'],
                       },
@@ -2205,6 +2205,7 @@ const loki = new k8s.helm.v3.Release(
         // writebackSizeLimit: '64MB',
       },
       write: {
+        replicas: 1,
         resources: {
           requests: {
             memory: '256Mi',
@@ -2215,7 +2216,7 @@ const loki = new k8s.helm.v3.Release(
         },
       },
       read: {
-        replicas: 3,
+        replicas: 1,
         resources: {
           requests: {
             memory: '256Mi',
@@ -2270,29 +2271,29 @@ const loki = new k8s.helm.v3.Release(
 
 // === EKS === Monitoring === Promtail ===
 
-const promtail = new k8s.helm.v3.Release(
-  nm('promtail'),
-  {
-    name: 'promtail',
-    chart: 'promtail',
-    version: '6.15.5',
-    namespace: monitoringNamespace.metadata.name,
-    repositoryOpts: {
-      repo: 'https://grafana.github.io/helm-charts',
-    },
-    maxHistory: 1,
-    values: {
-      config: {
-        clients: [
-          {
-            url: 'http://loki-gateway/loki/api/v1/push',
-          },
-        ],
-      },
-    },
-  },
-  { provider },
-)
+// const promtail = new k8s.helm.v3.Release(
+//   nm('promtail'),
+//   {
+//     name: 'promtail',
+//     chart: 'promtail',
+//     version: '6.15.5',
+//     namespace: monitoringNamespace.metadata.name,
+//     repositoryOpts: {
+//       repo: 'https://grafana.github.io/helm-charts',
+//     },
+//     maxHistory: 1,
+//     values: {
+//       config: {
+//         clients: [
+//           {
+//             url: 'http://loki-gateway/loki/api/v1/push',
+//           },
+//         ],
+//       },
+//     },
+//   },
+//   { provider },
+// )
 
 // === EKS === EFS ===
 
@@ -2509,7 +2510,7 @@ const argocd = new k8s.helm.v3.Release(
       repoServer: {
         autoscaling: {
           enabled: true,
-          minReplicas: 2,
+          minReplicas: 1,
         },
         resources: {
           requests: {
@@ -2639,7 +2640,7 @@ function registerHelmRelease(release: k8s.helm.v3.Release, project: string) {
   metricsServer,
   kubePrometheusStack,
   loki,
-  promtail,
+  // promtail,
   eso,
   vpa,
   kyverno,
