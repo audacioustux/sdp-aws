@@ -298,19 +298,20 @@ const cilium = new k8s.helm.v3.Release(
     name: 'cilium',
     chart: 'cilium',
     namespace: 'kube-system',
-    version: '1.15.6',
+    version: '1.16.1',
     repositoryOpts: {
       repo: 'https://helm.cilium.io',
     },
     maxHistory: 1,
     values: {
       rollOutCiliumPods: true,
-      kubeProxyReplacement: 'strict',
+      kubeProxyReplacement: 'true',
       k8sClientRateLimit: {
         burst: 200,
-        qps: 50,
+        qps: 100,
       },
       k8sServiceHost: cluster.endpoint.apply((endpoint) => endpoint.replace('https://', '')),
+      k8sServicePort: 443,
       bandwidthManager: {
         enabled: true,
         bbr: true,
@@ -1414,7 +1415,7 @@ new k8s.apiextensions.CustomResource(
                   spec: {
                     '+(topologySpreadConstraints)': [
                       {
-                        maxSkew: 1,
+                        maxSkew: 2,
                         minDomains: 2,
                         topologyKey: 'kubernetes.io/hostname',
                         whenUnsatisfiable: 'DoNotSchedule',
