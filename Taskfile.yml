@@ -35,6 +35,8 @@ tasks:
   kubeconfig:update:
     cmd: mkdir -p ~/.kube && pulumi stack -s prod output kubeconfig > ~/.kube/config
     generates: [~/.kube/config]
+  argo:password: argo auth token
+  argo:port-forward: kubectl port-forward -n argo svc/argo-server 2746
   argocd:password:
     deps: [kubeconfig:update]
     cmd: kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d

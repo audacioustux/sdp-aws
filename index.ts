@@ -1044,7 +1044,7 @@ const karpenterCRD = new k8s.helm.v3.Release(
     name: 'karpenter-crd',
     chart: 'oci://public.ecr.aws/karpenter/karpenter-crd',
     namespace: 'kube-system',
-    version: '0.37.0',
+    version: '1.0.1',
     maxHistory: 1,
   },
   { provider },
@@ -1144,7 +1144,7 @@ new k8s.apiextensions.CustomResource(
           },
           kubelet: {
             kubeReserved: {
-              memory: '256Mi',
+              memory: '100Mi',
             },
             podsPerCore: 40,
             maxPods: 150,
@@ -1166,6 +1166,86 @@ new k8s.apiextensions.CustomResource(
         consolidationPolicy: 'WhenUnderutilized',
         expireAfter: `${24 * 7}h`,
       },
+      weight: 50,
+    },
+  },
+  { provider },
+)
+
+// === EKS === Karpenter === High Priority Node Pool ===
+
+// TODO: ensure at-least 1 or certain % of pods are always running on on-demand instances
+
+new k8s.apiextensions.CustomResource(
+  nm('high-priority-node-pool'),
+  {
+    apiVersion: 'karpenter.sh/v1beta1',
+    kind: 'NodePool',
+    metadata: {
+      name: 'high-priority',
+    },
+    spec: {
+      template: {
+        spec: {
+          requirements: [
+            {
+              key: 'kubernetes.io/arch',
+              operator: 'In',
+              values: ['arm64', 'amd64'],
+            },
+            {
+              key: 'kubernetes.io/os',
+              operator: 'In',
+              values: ['linux'],
+            },
+            {
+              key: 'karpenter.sh/capacity-type',
+              operator: 'In',
+              values: ['on-demand'],
+            },
+            {
+              key: 'karpenter.k8s.aws/instance-hypervisor',
+              operator: 'In',
+              values: ['nitro'],
+            },
+          ],
+          nodeClassRef: {
+            apiVersion: 'karpenter.k8s.aws/v1beta1',
+            kind: 'EC2NodeClass',
+            name: defaultNodeClass.metadata.name,
+          },
+          taints: [
+            {
+              key: 'scheduler.sdp.aws/priority',
+              value: 'high',
+              effect: 'NoSchedule',
+            },
+          ],
+          kubelet: {
+            kubeReserved: {
+              memory: '128Mi',
+            },
+            podsPerCore: 40,
+            maxPods: 150,
+          },
+          startupTaints: [
+            {
+              key: 'node.cilium.io/agent-not-ready',
+              value: 'true',
+              effect: 'NoExecute',
+            },
+          ],
+        },
+      },
+      limits: {
+        cpu: '8',
+        memory: '32Gi',
+      },
+      disruption: {
+        consolidationPolicy: 'WhenUnderutilized',
+        expireAfter: `${24 * 14}h`,
+      },
+      weight: 50,
     },
   },
   { provider },
@@ -1415,18 +1495,16 @@ new k8s.apiextensions.CustomResource(
                   spec: {
                     '+(topologySpreadConstraints)': [
                       {
-                        maxSkew: 2,
-                        minDomains: 2,
+                        maxSkew: 1,
                         topologyKey: 'kubernetes.io/hostname',
-                        whenUnsatisfiable: 'DoNotSchedule',
+                        whenUnsatisfiable: 'ScheduleAnyway',
                         labelSelector: '{{request.object.spec.selector}}',
                         matchLabelKeys: ['pod-template-hash'],
                       },
                       {
-                        maxSkew: 2,
-                        minDomains: 2,
+                        maxSkew: 1,
                         topologyKey: 'topology.kubernetes.io/zone',
-                        whenUnsatisfiable: 'DoNotSchedule',
+                        whenUnsatisfiable: 'ScheduleAnyway',
                         labelSelector: '{{request.object.spec.selector}}',
                         matchLabelKeys: ['pod-template-hash'],
                       },
@@ -1465,17 +1543,15 @@ new k8s.apiextensions.CustomResource(
                     '+(topologySpreadConstraints)': [
                       {
                         maxSkew: 1,
-                        minDomains: 2,
                         topologyKey: 'kubernetes.io/hostname',
-                        whenUnsatisfiable: 'DoNotSchedule',
+                        whenUnsatisfiable: 'ScheduleAnyway',
                         labelSelector: '{{request.object.spec.selector}}',
                         matchLabelKeys: ['pod-template-hash'],
                       },
                       {
                         maxSkew: 1,
-                        minDomains: 2,
                         topologyKey: 'topology.kubernetes.io/zone',
-                        whenUnsatisfiable: 'DoNotSchedule',
+                        whenUnsatisfiable: 'ScheduleAnyway',
                         labelSelector: '{{request.object.spec.selector}}',
                         matchLabelKeys: ['controller-revision-hash'],
                       },
@@ -1980,7 +2056,7 @@ const kubePrometheusStack = new k8s.helm.v3.Release(
   {
     name: 'kube-prometheus-stack',
     chart: 'kube-prometheus-stack',
-    version: '61.0.0',
+    version: '62.3.1',
     namespace: monitoringNamespace.metadata.name,
     repositoryOpts: {
       repo: 'https://prometheus-community.github.io/helm-charts',
@@ -2177,98 +2253,98 @@ new aws.eks.PodIdentityAssociation(nm('loki-pod-identity'), {
   roleArn: lokiS3Role.arn,
 })
 
-const loki = new k8s.helm.v3.Release(
-  nm('loki'),
-  {
-    name: 'loki',
-    chart: 'loki',
-    version: '6.6.6',
-    namespace: 'monitoring',
-    repositoryOpts: {
-      repo: 'https://grafana.github.io/helm-charts',
-    },
-    values: {
-      // TODO: fix gateway svc not being accessible properly from grafana
-      // NOTE: https://github.com/grafana/loki/issues/12963
-      gateway: {
-        autoscaling: {
-          enabled: false,
-        },
-      },
-      chunksCache: {
-        // allocatedMemory: '512',
-        // writebackSizeLimit: '64MB',
-        enabled: false,
-      },
-      resultsCache: {
-        enabled: false,
-        // allocatedMemory: '128',
-        // writebackSizeLimit: '64MB',
-      },
-      write: {
-        replicas: 1,
-        resources: {
-          requests: {
-            memory: '256Mi',
-          },
-          limits: {
-            memory: '1Gi',
-          },
-        },
-      },
-      read: {
-        replicas: 1,
-        resources: {
-          requests: {
-            memory: '256Mi',
-          },
-          limits: {
-            memory: '1Gi',
-          },
-        },
-      },
-      loki: {
-        auth_enabled: false,
-        schemaConfig: {
-          configs: [
-            {
-              from: '2024-04-01',
-              store: 'tsdb',
-              object_store: 's3',
-              schema: 'v13',
-              index: {
-                prefix: 'loki_index_',
-                period: '24h',
-              },
-            },
-          ],
-        },
-        compactor: {
-          retention_enabled: true,
-          delete_request_store: 's3',
-          compaction_interval: '30m',
-          retention_delete_delay: '2h',
-          retention_delete_worker_count: 150,
-        },
-        limits_config: {
-          retention_period: '7d',
-        },
-        ingester: {
-          chunk_encoding: 'snappy',
-        },
-        storage: {
-          type: 's3',
-          s3: {
-            region: regionId,
-          },
-          bucketNames: lokiBucketsMap,
-        },
-      },
-      deploymentMode: 'SimpleScalable',
-    },
-  },
-  { provider },
-)
+// const loki = new k8s.helm.v3.Release(
+//   nm('loki'),
+//   {
+//     name: 'loki',
+//     chart: 'loki',
+//     version: '6.10.2',
+//     namespace: 'monitoring',
+//     repositoryOpts: {
+//       repo: 'https://grafana.github.io/helm-charts',
+//     },
+//     values: {
+//       // TODO: fix gateway svc not being accessible properly from grafana
+//       // NOTE: https://github.com/grafana/loki/issues/12963
+//       gateway: {
+//         autoscaling: {
+//           enabled: false,
+//         },
+//       },
+//       chunksCache: {
+//         // allocatedMemory: '512',
+//         // writebackSizeLimit: '64MB',
+//         enabled: false,
+//       },
+//       resultsCache: {
+//         enabled: false,
+//         // allocatedMemory: '128',
+//         // writebackSizeLimit: '64MB',
+//       },
+//       write: {
+//         replicas: 1,
+//         resources: {
+//           requests: {
+//             memory: '256Mi',
+//           },
+//           limits: {
+//             memory: '1Gi',
+//           },
+//         },
+//       },
+//       read: {
+//         replicas: 1,
+//         resources: {
+//           requests: {
+//             memory: '256Mi',
+//           },
+//           limits: {
+//             memory: '1Gi',
+//           },
+//         },
+//       },
+//       loki: {
+//         auth_enabled: false,
+//         schemaConfig: {
+//           configs: [
+//             {
+//               from: '2024-04-01',
+//               store: 'tsdb',
+//               object_store: 's3',
+//               schema: 'v13',
+//               index: {
+//                 prefix: 'loki_index_',
+//                 period: '24h',
+//               },
+//             },
+//           ],
+//         },
+//         compactor: {
+//           retention_enabled: true,
+//           delete_request_store: 's3',
+//           compaction_interval: '30m',
+//           retention_delete_delay: '2h',
+//           retention_delete_worker_count: 150,
+//         },
+//         limits_config: {
+//           retention_period: '7d',
+//         },
+//         ingester: {
+//           chunk_encoding: 'snappy',
+//         },
+//         storage: {
+//           type: 's3',
+//           s3: {
+//             region: regionId,
+//           },
+//           bucketNames: lokiBucketsMap,
+//         },
+//       },
+//       deploymentMode: 'SimpleScalable',
+//     },
+//   },
+//   { provider },
+// )
 
 // === EKS === Monitoring === Promtail ===
 
@@ -2305,6 +2381,12 @@ const efs = new aws.efs.FileSystem(nm('efs'), {
   throughputMode: 'elastic',
   tags: {
     Name: nm('efs'),
+  },
+})
+new aws.efs.BackupPolicy(nm('efs-backup-policy'), {
+  fileSystemId: efs.id,
+  backupPolicy: {
+    status: 'ENABLED',
   },
 })
 privateSubnets.forEach((subnet, index) => {
@@ -2393,13 +2475,16 @@ new aws.eks.PodIdentityAssociation(nm('velero-backup-pod-identity'), {
   serviceAccount: 'velero-server',
   roleArn: veleroBackupRole.arn,
 })
+
+// TODO: version upgrade
+// NOTE: https://github.com/vmware-tanzu/velero/issues/7892
 const veleroNamespace = new k8s.core.v1.Namespace(nm('velero'), { metadata: { name: 'velero' } }, { provider })
 const velero = new k8s.helm.v3.Release(
   nm('velero'),
   {
     name: 'velero',
     chart: 'velero',
-    version: '7.1.0',
+    version: '7.1.5',
     namespace: veleroNamespace.metadata.name,
     repositoryOpts: {
       repo: 'https://vmware-tanzu.github.io/helm-charts',
@@ -2421,15 +2506,18 @@ const velero = new k8s.helm.v3.Release(
           {
             name: 'default',
             provider: 'aws',
+            config: {
+              region: regionId,
+            },
           },
         ],
-        snapshotsEnabled: true,
-        backupsEnabled: true,
       },
+      snapshotsEnabled: true,
+      backupsEnabled: true,
       initContainers: [
         {
           name: 'velero-plugin-for-aws',
-          image: 'velero/velero-plugin-for-aws:v1.10.0',
+          image: 'velero/velero-plugin-for-aws:v1.10.1',
           volumeMounts: [
             {
               mountPath: '/target',
@@ -2438,18 +2526,54 @@ const velero = new k8s.helm.v3.Release(
           ],
         },
       ],
-      schedules: {
-        weekly: {
-          schedule: '@weekly',
-          useOwnerReferencesInBackup: false,
-          template: {
-            ttl: `${14 * 24}h`,
-            storageLocation: 'default',
-            includedNamespaces: ['*'],
+      deployNodeAgent: true,
+    },
+  },
+  { provider },
+)
+
+// === EKS === Argo Workflow ===
+
+const argoNamespace = new k8s.core.v1.Namespace(nm('argo'), { metadata: { name: 'argo' } }, { provider })
+const argo = new k8s.helm.v3.Release(
+  nm('argo'),
+  {
+    name: 'argo',
+    chart: 'argo-workflows',
+    version: '0.42.1',
+    namespace: argoNamespace.metadata.name,
+    repositoryOpts: {
+      repo: 'https://argoproj.github.io/argo-helm',
+    },
+    maxHistory: 1,
+    values: {
+      server: {
+        ingress: {
+          enabled: true,
+          annotations: {
+            'cert-manager.io/cluster-issuer': 'letsencrypt-prod-issuer',
           },
+          hosts: [config.argoWorkflows.host],
+          paths: ['/'],
+          pathType: 'Prefix',
+          tls: [
+            {
+              secretName: 'argo-workflows-tls',
+              hosts: [config.argoWorkflows.host],
+            },
+          ],
         },
       },
-      deployNodeAgent: true,
+      workflow: {
+        serviceAccount: {
+          create: true,
+          name: 'argo-workflow',
+        },
+        rbac: {
+          create: true,
+        },
+      },
+      singleNamespace: true,
     },
   },
   { provider },
@@ -2509,14 +2633,10 @@ const argocd = new k8s.helm.v3.Release(
         },
       },
       repoServer: {
-        autoscaling: {
-          enabled: true,
-          minReplicas: 1,
-        },
         resources: {
           requests: {
             cpu: '100m',
-            memory: '256Mi',
+            memory: '384Mi',
           },
           limits: {
             memory: '512Mi',
@@ -2640,12 +2760,13 @@ function registerHelmRelease(release: k8s.helm.v3.Release, project: string) {
   certManager,
   metricsServer,
   kubePrometheusStack,
-  loki,
+  // loki,
   // promtail,
   eso,
   vpa,
   kyverno,
   velero,
+  argo,
   argocd,
   // TODO: configure argocd to play nicely with cilium
   // NOTE: https://docs.cilium.io/en/latest/configuration/argocd-issues/

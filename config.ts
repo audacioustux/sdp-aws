@@ -30,6 +30,11 @@ const argocd = {
   host: argocdConfig.require('host'),
 }
 
+const argoWorkflowsConfig = new Config('argo-workflows')
+const argoWorkflows = {
+  host: argoWorkflowsConfig.require('host'),
+}
+
 const adminConfig = new Config('admin')
 const admin = {
   email: adminConfig.require('email'),
@@ -54,4 +59,4 @@ const zerossl = {
 }
 // TODO: move hard-coded configs in index.ts to here
 
-export { pulumi, grafana, defaults, argocd, admin, route53, dockerRegistry, zerossl }
+export { pulumi, grafana, defaults, argocd, admin, route53, dockerRegistry, zerossl, argoWorkflows }
