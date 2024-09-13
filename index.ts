@@ -225,6 +225,7 @@ const defaultNodeGroup = new eks.ManagedNodeGroup(defaultNodeGroupName, {
   nodeRole: cluster.instanceRoles[0],
   subnetIds: privateSubnets.map((s) => s.id),
   capacityType: 'SPOT',
+  // capacityType: 'ON_DEMAND',
   // TODO: switch to Bottlerocket
   // NOTE: https://github.com/pulumi/pulumi-eks/issues/1179
   // NOTE: https://github.com/bottlerocket-os/bottlerocket/issues/1721
@@ -241,6 +242,9 @@ const defaultNodeGroup = new eks.ManagedNodeGroup(defaultNodeGroupName, {
     minSize: 2,
     maxSize: 2,
     desiredSize: 2,
+  },
+  labels: {
+    'capacity-spread': '0',
   },
   taints: [
     {
@@ -1102,20 +1106,27 @@ const defaultNodeClass = new k8s.apiextensions.CustomResource(
   { provider, dependsOn: [karpenter] },
 )
 
-// === EKS === Karpenter === Node Pool ===
+// === EKS === Karpenter === Node Pools ===
+
+// TODO: ensure at-least 1 or certain % of pods are always running on on-demand instances
 
 new k8s.apiextensions.CustomResource(
-  nm('default-node-pool'),
+  nm('spot-node-pool'),
   {
     apiVersion: 'karpenter.sh/v1beta1',
     kind: 'NodePool',
     metadata: {
-      name: 'default',
+      name: 'spot',
     },
     spec: {
       template: {
         spec: {
           requirements: [
+            {
+              key: 'capacity-spread',
+              operator: 'In',
+              values: ['0'],
+            },
             {
               key: 'kubernetes.io/arch',
               operator: 'In',
@@ -1129,7 +1140,7 @@ new k8s.apiextensions.CustomResource(
             {
               key: 'karpenter.sh/capacity-type',
               operator: 'In',
-              values: ['spot', 'on-demand'],
+              values: ['spot', 'on-demand'], // keep on-demand as a fallback
             },
             {
               key: 'karpenter.k8s.aws/instance-hypervisor',
@@ -1164,7 +1175,7 @@ new k8s.apiextensions.CustomResource(
       },
       disruption: {
         consolidationPolicy: 'WhenUnderutilized',
-        expireAfter: `${24 * 7}h`,
+        expireAfter: `${24 * 14}h`,
       },
       weight: 50,
     },
@@ -1172,22 +1183,23 @@ new k8s.apiextensions.CustomResource(
   { provider },
 )
 
-// === EKS === Karpenter === High Priority Node Pool ===
-
-// TODO: ensure at-least 1 or certain % of pods are always running on on-demand instances
-
 new k8s.apiextensions.CustomResource(
-  nm('high-priority-node-pool'),
+  nm('on-demand-node-pool'),
   {
     apiVersion: 'karpenter.sh/v1beta1',
     kind: 'NodePool',
     metadata: {
-      name: 'high-priority',
+      name: 'on-demand',
     },
     spec: {
       template: {
         spec: {
           requirements: [
+            {
+              key: 'capacity-spread',
+              operator: 'In',
+              values: ['20'],
+            },
             {
               key: 'kubernetes.io/arch',
               operator: 'In',
@@ -1214,16 +1226,9 @@ new k8s.apiextensions.CustomResource(
             kind: 'EC2NodeClass',
             name: defaultNodeClass.metadata.name,
           },
-          taints: [
-            {
-              key: 'scheduler.sdp.aws/priority',
-              value: 'high',
-              effect: 'NoSchedule',
-            },
-          ],
           kubelet: {
             kubeReserved: {
-              memory: '128Mi',
+              memory: '100Mi',
             },
             podsPerCore: 40,
             maxPods: 150,
@@ -1238,8 +1243,8 @@ new k8s.apiextensions.CustomResource(
         },
       },
       limits: {
-        cpu: '8',
-        memory: '32Gi',
+        cpu: '16',
+        memory: '64Gi',
       },
       disruption: {
         consolidationPolicy: 'WhenUnderutilized',
@@ -1269,7 +1274,7 @@ const vpa = new k8s.helm.v3.Release(
   { provider },
 )
 
-// === EKS === ECR pull through cache ===
+// === EKS === ECR Pull Through Cache ===
 
 export const ecrK8sPullThroughCacheRule = new aws.ecr.PullThroughCacheRule(nm('ecr-k8s-pull-through-cache'), {
   upstreamRegistryUrl: 'registry.k8s.io',
@@ -1308,7 +1313,7 @@ const kyverno = new k8s.helm.v3.Release(
   {
     name: 'kyverno',
     chart: 'kyverno',
-    version: '3.2.4',
+    version: '3.2.6',
     namespace: kyvernoNamespace.metadata.name,
     repositoryOpts: {
       repo: 'https://kyverno.github.io/kyverno/',
@@ -1427,18 +1432,56 @@ new k8s.apiextensions.CustomResource(
               preconditions: {
                 all: [
                   {
-                    key: "{{ regex_match('^(docker.io|registry.k8s.io)/(.*)', '{{ element.image }}') }}",
-                    operator: 'Equals',
-                    value: true,
+                    key: `{{ images.${key}."{{element.name}}".registry }}`,
+                    operator: 'AnyIn',
+                    value: ['docker.io', 'registry.k8s.io'],
                   },
                 ],
               },
+              context: [
+                {
+                  name: 'registry',
+                  variable: {
+                    value: `{{ images.${key}."{{element.name}}".registry }}`,
+                  },
+                },
+                {
+                  name: 'namespace',
+                  variable: {
+                    value: `{{ images.${key}."{{element.name}}".path | contains(@, '/') && split(@, '/')[0] || 'library' }}`,
+                  },
+                },
+                {
+                  name: 'repository',
+                  variable: {
+                    value: `{{ images.${key}."{{element.name}}".path | contains(@, '/') && split(@, '/')[1] || @ }}`,
+                  },
+                },
+                {
+                  name: 'tag',
+                  variable: {
+                    value: `{{ images.${key}."{{element.name}}".tag || 'latest' }}`,
+                  },
+                },
+                {
+                  name: 'digest',
+                  variable: {
+                    value: `{{ images.${key}."{{element.name}}".digest || '' }}`,
+                  },
+                },
+                {
+                  name: 'ref',
+                  variable: {
+                    value: `{{ digest && '{{ tag }}@{{ digest }}' || tag }}`,
+                  },
+                },
+              ],
               patchStrategicMerge: {
                 spec: {
                   [key]: [
                     {
                       name: '{{ element.name }}',
-                      image: pulumi.interpolate`{{ regex_replace_all('^([^/]*)/(.*)', '{{ element.image }}', '${ecrPrivateRegistryUrl}/$1/$2') }}`,
+                      image: `{{ regex_replace_all('^([^/]*)/([^/]*)/([^:]*):(.*)', '{{ registry }}/{{ namespace }}/{{ repository }}:{{ ref }}', '${ecrPrivateRegistryUrl}/$1/$2/$3:$4') }}`,
                     },
                   ],
                 },
@@ -1451,6 +1494,8 @@ new k8s.apiextensions.CustomResource(
   },
   { provider, dependsOn: [kyverno] },
 )
+
+// === EKS === Spread Pods ===
 
 const spreadPods = 'spread-pods'
 new k8s.apiextensions.CustomResource(
@@ -1508,6 +1553,13 @@ new k8s.apiextensions.CustomResource(
                         labelSelector: '{{request.object.spec.selector}}',
                         matchLabelKeys: ['pod-template-hash'],
                       },
+                      {
+                        maxSkew: 1,
+                        topologyKey: 'capacity-spread',
+                        whenUnsatisfiable: 'DoNotSchedule',
+                        labelSelector: '{{request.object.spec.selector}}',
+                        matchLabelKeys: ['pod-template-hash'],
+                      },
                     ],
                   },
                 },
@@ -1546,12 +1598,19 @@ new k8s.apiextensions.CustomResource(
                         topologyKey: 'kubernetes.io/hostname',
                         whenUnsatisfiable: 'ScheduleAnyway',
                         labelSelector: '{{request.object.spec.selector}}',
-                        matchLabelKeys: ['pod-template-hash'],
+                        matchLabelKeys: ['controller-revision-hash'],
                       },
                       {
                         maxSkew: 1,
                         topologyKey: 'topology.kubernetes.io/zone',
                         whenUnsatisfiable: 'ScheduleAnyway',
+                        labelSelector: '{{request.object.spec.selector}}',
+                        matchLabelKeys: ['controller-revision-hash'],
+                      },
+                      {
+                        maxSkew: 1,
+                        topologyKey: 'capacity-spread',
+                        whenUnsatisfiable: 'DoNotSchedule',
                         labelSelector: '{{request.object.spec.selector}}',
                         matchLabelKeys: ['controller-revision-hash'],
                       },
