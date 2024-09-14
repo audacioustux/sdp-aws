@@ -2189,9 +2189,6 @@ const kubePrometheusStack = new k8s.helm.v3.Release(
             enabled: true,
           },
         },
-        verticalPodAutoscaler: {
-          enabled: true,
-        },
       },
       alertmanager: {
         alertmanagerSpec: {
