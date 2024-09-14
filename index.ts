@@ -237,7 +237,7 @@ const defaultNodeGroup = new eks.ManagedNodeGroup(defaultNodeGroupName, {
   amiType: 'AL2023_ARM_64_STANDARD',
   // NOTE: large node size so the Pod limit is less likely to be reached
   // NOTE: t4g instances has larger Pod limit
-  instanceTypes: ['t4g.large'],
+  instanceTypes: ['t4g.xlarge'],
   scalingConfig: {
     minSize: 2,
     maxSize: 2,
@@ -1077,7 +1077,10 @@ const karpenter = new k8s.helm.v3.Release(
     },
     timeout: 60 * 30,
   },
-  { provider, dependsOn: [defaultNodeGroup] },
+  {
+    provider,
+    dependsOn: [defaultNodeGroup],
+  },
 )
 
 // === EKS === Karpenter === Node Class ===
@@ -1180,7 +1183,7 @@ new k8s.apiextensions.CustomResource(
       weight: 50,
     },
   },
-  { provider },
+  { provider, dependsOn: [defaultNodeClass] },
 )
 
 new k8s.apiextensions.CustomResource(
@@ -1239,6 +1242,11 @@ new k8s.apiextensions.CustomResource(
               value: 'true',
               effect: 'NoExecute',
             },
+            {
+              key: 'node.sdp.aws/stability',
+              value: 'high',
+              effect: 'PreferNoSchedule',
+            },
           ],
         },
       },
@@ -1253,7 +1261,7 @@ new k8s.apiextensions.CustomResource(
       weight: 50,
     },
   },
-  { provider },
+  { provider, dependsOn: [defaultNodeClass] },
 )
 
 // === EKS === Vertical Pod Autoscaler ===
@@ -1556,7 +1564,7 @@ new k8s.apiextensions.CustomResource(
                       {
                         maxSkew: 1,
                         topologyKey: 'capacity-spread',
-                        whenUnsatisfiable: 'DoNotSchedule',
+                        whenUnsatisfiable: 'ScheduleAnyway',
                         labelSelector: '{{request.object.spec.selector}}',
                         matchLabelKeys: ['pod-template-hash'],
                       },
@@ -1610,7 +1618,7 @@ new k8s.apiextensions.CustomResource(
                       {
                         maxSkew: 1,
                         topologyKey: 'capacity-spread',
-                        whenUnsatisfiable: 'DoNotSchedule',
+                        whenUnsatisfiable: 'ScheduleAnyway',
                         labelSelector: '{{request.object.spec.selector}}',
                         matchLabelKeys: ['controller-revision-hash'],
                       },
@@ -2130,10 +2138,10 @@ const kubePrometheusStack = new k8s.helm.v3.Release(
           probeSelectorNilUsesHelmValues: false,
           resources: {
             requests: {
-              memory: '1.5Gi',
+              memory: '2Gi',
             },
             limits: {
-              memory: '2Gi',
+              memory: '4Gi',
             },
           },
           retention: '7d',
