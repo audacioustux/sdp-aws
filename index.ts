@@ -1272,7 +1272,7 @@ const vpa = new k8s.helm.v3.Release(
   {
     name: 'vertical-pod-autoscaler',
     chart: 'vertical-pod-autoscaler',
-    version: '9.8.2',
+    version: '9.9.0',
     namespace: vpaNamespace.metadata.name,
     repositoryOpts: {
       repo: 'https://cowboysysop.github.io/charts/',
