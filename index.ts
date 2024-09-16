@@ -232,12 +232,12 @@ const defaultNodeGroup = new eks.ManagedNodeGroup(defaultNodeGroupName, {
   // NOTE: https://github.com/cilium/cilium/issues/32616#issuecomment-2126367506
   // amiType: 'BOTTLEROCKET_ARM_64',
   // instanceTypes: ['m7g.medium', 'm7gd.medium', 't4g.medium', 'r7g.medium'],
-  // kubeletExtraArgs: '--max-pods=110',
+  // kubeletExtraArgs: '--max-pods=150 --max-pods-per-core=40',
   // bootstrapExtraArgs: '--use-max-pods false',
   amiType: 'AL2023_ARM_64_STANDARD',
   // NOTE: large node size so the Pod limit is less likely to be reached
   // NOTE: t4g instances has larger Pod limit
-  instanceTypes: ['t4g.xlarge'],
+  instanceTypes: ['t4g.xlarge', 'm7g.xlarge'],
   scalingConfig: {
     minSize: 2,
     maxSize: 2,
@@ -1088,14 +1088,18 @@ const karpenter = new k8s.helm.v3.Release(
 const defaultNodeClass = new k8s.apiextensions.CustomResource(
   nm('default-node-class'),
   {
-    apiVersion: 'karpenter.k8s.aws/v1beta1',
+    apiVersion: 'karpenter.k8s.aws/v1',
     kind: 'EC2NodeClass',
     metadata: {
       name: 'default',
     },
     spec: {
+      kubelet: {
+        podsPerCore: 40,
+        maxPods: 150,
+      },
       // amiFamily: 'Bottlerocket',
-      amiFamily: 'AL2023',
+      amiSelectorTerms: [{ alias: 'al2023@latest' }],
       role: eksInstanceRole.name,
       associatePublicIPAddress: false,
       subnetSelectorTerms: privateSubnets.map(({ id }) => ({ id })),
@@ -1116,7 +1120,7 @@ const defaultNodeClass = new k8s.apiextensions.CustomResource(
 new k8s.apiextensions.CustomResource(
   nm('spot-node-pool'),
   {
-    apiVersion: 'karpenter.sh/v1beta1',
+    apiVersion: 'karpenter.sh/v1',
     kind: 'NodePool',
     metadata: {
       name: 'spot',
@@ -1124,6 +1128,20 @@ new k8s.apiextensions.CustomResource(
     spec: {
       template: {
         spec: {
+          nodeClassRef: {
+            group: 'karpenter.k8s.aws',
+            kind: 'EC2NodeClass',
+            name: defaultNodeClass.metadata.name,
+          },
+          startupTaints: [
+            {
+              key: 'node.cilium.io/agent-not-ready',
+              value: 'true',
+              effect: 'NoExecute',
+            },
+          ],
+          expireAfter: `${24 * 30}h`,
+          terminationGracePeriod: '24h',
           requirements: [
             {
               key: 'capacity-spread',
@@ -1151,25 +1169,6 @@ new k8s.apiextensions.CustomResource(
               values: ['nitro'],
             },
           ],
-          nodeClassRef: {
-            apiVersion: 'karpenter.k8s.aws/v1beta1',
-            kind: 'EC2NodeClass',
-            name: defaultNodeClass.metadata.name,
-          },
-          kubelet: {
-            kubeReserved: {
-              memory: '100Mi',
-            },
-            podsPerCore: 40,
-            maxPods: 150,
-          },
-          startupTaints: [
-            {
-              key: 'node.cilium.io/agent-not-ready',
-              value: 'true',
-              effect: 'NoExecute',
-            },
-          ],
         },
       },
       limits: {
@@ -1177,8 +1176,8 @@ new k8s.apiextensions.CustomResource(
         memory: '64Gi',
       },
       disruption: {
-        consolidationPolicy: 'WhenUnderutilized',
-        expireAfter: `${24 * 14}h`,
+        consolidationPolicy: 'WhenEmptyOrUnderutilized',
+        consolidateAfter: '1m',
       },
       weight: 50,
     },
@@ -1189,7 +1188,7 @@ new k8s.apiextensions.CustomResource(
 new k8s.apiextensions.CustomResource(
   nm('on-demand-node-pool'),
   {
-    apiVersion: 'karpenter.sh/v1beta1',
+    apiVersion: 'karpenter.sh/v1',
     kind: 'NodePool',
     metadata: {
       name: 'on-demand',
@@ -1197,6 +1196,27 @@ new k8s.apiextensions.CustomResource(
     spec: {
       template: {
         spec: {
+          nodeClassRef: {
+            group: 'karpenter.k8s.aws',
+            kind: 'EC2NodeClass',
+            name: defaultNodeClass.metadata.name,
+          },
+          taints: [
+            {
+              key: 'node.sdp.aws/stability',
+              value: 'high',
+              effect: 'PreferNoSchedule',
+            },
+          ],
+          startupTaints: [
+            {
+              key: 'node.cilium.io/agent-not-ready',
+              value: 'true',
+              effect: 'NoExecute',
+            },
+          ],
+          expireAfter: `${24 * 30}h`,
+          terminationGracePeriod: '24h',
           requirements: [
             {
               key: 'capacity-spread',
@@ -1224,30 +1244,6 @@ new k8s.apiextensions.CustomResource(
               values: ['nitro'],
             },
           ],
-          nodeClassRef: {
-            apiVersion: 'karpenter.k8s.aws/v1beta1',
-            kind: 'EC2NodeClass',
-            name: defaultNodeClass.metadata.name,
-          },
-          kubelet: {
-            kubeReserved: {
-              memory: '100Mi',
-            },
-            podsPerCore: 40,
-            maxPods: 150,
-          },
-          startupTaints: [
-            {
-              key: 'node.cilium.io/agent-not-ready',
-              value: 'true',
-              effect: 'NoExecute',
-            },
-            {
-              key: 'node.sdp.aws/stability',
-              value: 'high',
-              effect: 'PreferNoSchedule',
-            },
-          ],
         },
       },
       limits: {
@@ -1255,8 +1251,8 @@ new k8s.apiextensions.CustomResource(
         memory: '64Gi',
       },
       disruption: {
-        consolidationPolicy: 'WhenUnderutilized',
-        expireAfter: `${24 * 14}h`,
+        consolidationPolicy: 'WhenEmptyOrUnderutilized',
+        consolidateAfter: '1m',
       },
       weight: 50,
     },
@@ -1549,13 +1545,14 @@ new k8s.apiextensions.CustomResource(
                     '+(topologySpreadConstraints)': [
                       {
                         maxSkew: 1,
+                        minDomains: 2,
                         topologyKey: 'kubernetes.io/hostname',
-                        whenUnsatisfiable: 'ScheduleAnyway',
+                        whenUnsatisfiable: 'DoNotSchedule',
                         labelSelector: '{{request.object.spec.selector}}',
                         matchLabelKeys: ['pod-template-hash'],
                       },
                       {
-                        maxSkew: 1,
+                        maxSkew: 2,
                         topologyKey: 'topology.kubernetes.io/zone',
                         whenUnsatisfiable: 'ScheduleAnyway',
                         labelSelector: '{{request.object.spec.selector}}',
@@ -1603,13 +1600,14 @@ new k8s.apiextensions.CustomResource(
                     '+(topologySpreadConstraints)': [
                       {
                         maxSkew: 1,
+                        minDomains: 2,
                         topologyKey: 'kubernetes.io/hostname',
-                        whenUnsatisfiable: 'ScheduleAnyway',
+                        whenUnsatisfiable: 'DoNotSchedule',
                         labelSelector: '{{request.object.spec.selector}}',
                         matchLabelKeys: ['controller-revision-hash'],
                       },
                       {
-                        maxSkew: 1,
+                        maxSkew: 2,
                         topologyKey: 'topology.kubernetes.io/zone',
                         whenUnsatisfiable: 'ScheduleAnyway',
                         labelSelector: '{{request.object.spec.selector}}',
@@ -2686,10 +2684,10 @@ const argocd = new k8s.helm.v3.Release(
       controller: {
         resources: {
           requests: {
-            memory: '1Gi',
+            memory: '2Gi',
           },
           limits: {
-            memory: '2Gi',
+            memory: '4Gi',
           },
         },
         metrics: {
