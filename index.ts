@@ -237,7 +237,7 @@ const defaultNodeGroup = new eks.ManagedNodeGroup(defaultNodeGroupName, {
   amiType: 'AL2023_ARM_64_STANDARD',
   // NOTE: large node size so the Pod limit is less likely to be reached
   // NOTE: t4g instances has larger Pod limit
-  instanceTypes: ['t4g.xlarge', 'm7g.xlarge'],
+  instanceTypes: ['t4g.xlarge', 't4g.large', 'm7g.xlarge', 'm6g.xlarge'],
   scalingConfig: {
     minSize: 2,
     maxSize: 2,
@@ -415,6 +415,49 @@ new aws.eks.Addon(nm('coredns'), {
       mostRecent: true,
     }),
   ).version,
+  configurationValues: JSON.stringify({
+    autoScaling: {
+      enabled: true,
+    },
+    topologySpreadConstraints: [
+      {
+        maxSkew: 1,
+        minDomains: 2,
+        topologyKey: 'kubernetes.io/hostname',
+        whenUnsatisfiable: 'DoNotSchedule',
+        labelSelector: {
+          matchLabels: {
+            'k8s-app': 'kube-dns',
+          },
+        },
+        matchLabelKeys: ['pod-template-hash'],
+      },
+      {
+        maxSkew: 2,
+        minDomains: 2,
+        topologyKey: 'topology.kubernetes.io/zone',
+        whenUnsatisfiable: 'DoNotSchedule',
+        labelSelector: {
+          matchLabels: {
+            'k8s-app': 'kube-dns',
+          },
+        },
+        matchLabelKeys: ['pod-template-hash'],
+      },
+      {
+        maxSkew: 1,
+        minDomains: 2,
+        topologyKey: 'capacity-spread',
+        whenUnsatisfiable: 'DoNotSchedule',
+        labelSelector: {
+          matchLabels: {
+            'k8s-app': 'kube-dns',
+          },
+        },
+        matchLabelKeys: ['pod-template-hash'],
+      },
+    ],
+  }),
   resolveConflictsOnUpdate: 'OVERWRITE',
 })
 
@@ -1553,15 +1596,17 @@ new k8s.apiextensions.CustomResource(
                       },
                       {
                         maxSkew: 2,
+                        minDomains: 2,
                         topologyKey: 'topology.kubernetes.io/zone',
-                        whenUnsatisfiable: 'ScheduleAnyway',
+                        whenUnsatisfiable: 'DoNotSchedule',
                         labelSelector: '{{request.object.spec.selector}}',
                         matchLabelKeys: ['pod-template-hash'],
                       },
                       {
                         maxSkew: 1,
+                        minDomains: 2,
                         topologyKey: 'capacity-spread',
-                        whenUnsatisfiable: 'ScheduleAnyway',
+                        whenUnsatisfiable: 'DoNotSchedule',
                         labelSelector: '{{request.object.spec.selector}}',
                         matchLabelKeys: ['pod-template-hash'],
                       },
@@ -1608,15 +1653,17 @@ new k8s.apiextensions.CustomResource(
                       },
                       {
                         maxSkew: 2,
+                        minDomains: 2,
                         topologyKey: 'topology.kubernetes.io/zone',
-                        whenUnsatisfiable: 'ScheduleAnyway',
+                        whenUnsatisfiable: 'DoNotSchedule',
                         labelSelector: '{{request.object.spec.selector}}',
                         matchLabelKeys: ['controller-revision-hash'],
                       },
                       {
                         maxSkew: 1,
+                        minDomains: 2,
                         topologyKey: 'capacity-spread',
-                        whenUnsatisfiable: 'ScheduleAnyway',
+                        whenUnsatisfiable: 'DoNotSchedule',
                         labelSelector: '{{request.object.spec.selector}}',
                         matchLabelKeys: ['controller-revision-hash'],
                       },
