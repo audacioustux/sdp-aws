@@ -1,0 +1,59 @@
+MySQL [mautic]> SELECT table_schema AS "Database", SUM(data_length + index_length) / 1024 / 1024 / 1024 AS "Size (GB)" FROM information_schema.TABLES GROUP BY table_schema;
++--------------------+----------------+
+| Database           | Size (GB)      |
++--------------------+----------------+
+| information_schema | 0.000000000000 |
+| limesurvey         | 0.129623413086 |
+| mautic             | 6.302520751953 |
+| mautic_dev         | 0.006530761719 |
+| mysql              | 0.009246826172 |
+| performance_schema | 0.000000000000 |
+| shlink             | 0.035934448242 |
+| sys                | 0.000015258789 |
++--------------------+----------------+
+8 rows in set (2.048 sec)
+
+MySQL [mautic]> SELECT table_name AS "Table",
+    -> ROUND(((data_length + index_length) / 1024 / 1024), 2) AS "Size (MB)"
+    -> FROM information_schema.TABLES
+    -> WHERE table_schema = "mauticdb"
+    -> ORDER BY (data_length + index_length) DESC;
+Empty set (0.002 sec)
+
+MySQL [mautic]> SELECT table_name AS "Table",
+    -> ROUND(((data_length + index_length) / 1024 / 1024), 2) AS "Size (MB)"
+    -> FROM information_schema.TABLES
+    -> WHERE table_schema = "mauticdb"
+    -> ORDER BY (data_length + index_length) DESC;
+Empty set (0.002 sec)
+
+MySQL [mautic]> SELECT table_name AS "Table", ROUND(((data_length + index_length) / 1024 / 1024), 2) AS
+"Size (MB)" FROM information_schema.TABLES WHERE table_schema = "mautic" ORDER BY (data_length + index_l
+ength) DESC;
++---------------------------------+-----------+
+| Table                           | Size (MB) |
++---------------------------------+-----------+
+| lead_event_log                  |   1979.31 |
+| audit_log                       |   1586.42 |
+| email_stats                     |   1168.00 |
+| leads                           |    966.91 |
+| campaign_lead_event_log         |    211.66 |
+| lead_lists_leads                |    194.66 |
+| page_hits                       |    104.05 |
+| lead_tags_xref                  |     76.97 |
+| lead_devices                    |     44.69 |
+| campaign_leads                  |     38.59 |
+| ip_addresses                    |     38.08 |
+| email_stats_devices             |     15.58 |
+| lead_stages_change_log          |      6.55 |
+| lead_utmtags                    |      4.63 |
+| lead_ips_xref                   |      3.98 |
+| form_submissions                |      2.67 |
+| pages                           |      2.22 |
+| lead_donotcontact               |      1.67 |
+| campaign_summary                |      0.30 |
+| contact_merge_records           |      0.30 |
+| form_results_3_enroll_now       |      0.27 |
+| email_copies                    |      0.25 |
+| form_results_4_enroll_now       |      0.25 |
+

@@ -55,6 +55,7 @@ metadata:
   name: http-echo
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-prod-issuer
+    external-dns.alpha.kubernetes.io/target: dsn2w5d05316l.cloudfront.net
 spec:
   rules:
     - host: echo.coderstrust.global

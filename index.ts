@@ -237,7 +237,7 @@ const defaultNodeGroup = new eks.ManagedNodeGroup(defaultNodeGroupName, {
   amiType: 'AL2023_ARM_64_STANDARD',
   // NOTE: large node size so the Pod limit is less likely to be reached
   // NOTE: t4g instances has larger Pod limit
-  instanceTypes: ['t4g.xlarge', 't4g.large', 'm7g.xlarge', 'm6g.xlarge'],
+  instanceTypes: ['t4g.xlarge', 'm7g.xlarge', 'm6g.xlarge'],
   scalingConfig: {
     minSize: 2,
     maxSize: 2,
@@ -316,10 +316,10 @@ const cilium = new k8s.helm.v3.Release(
       },
       k8sServiceHost: cluster.endpoint.apply((endpoint) => endpoint.replace('https://', '')),
       k8sServicePort: 443,
-      bandwidthManager: {
-        enabled: true,
-        bbr: true,
-      },
+      // bandwidthManager: {
+      //   enabled: true,
+      //   bbr: true,
+      // },
       ingressController: {
         enabled: true,
         loadbalancerMode: 'shared',
@@ -330,24 +330,24 @@ const cilium = new k8s.helm.v3.Release(
           },
         },
       },
-      gatewayAPI: {
-        enabled: true,
-      },
+      // gatewayAPI: {
+      //   enabled: true,
+      // },
       hubble: {
         relay: {
           rollOutPods: true,
           enabled: true,
-          resources: config.defaults.pod.resources,
+          // resources: config.defaults.pod.resources,
         },
         ui: {
           rollOutPods: true,
           enabled: true,
-          backend: {
-            resources: config.defaults.pod.resources,
-          },
-          frontend: {
-            resources: config.defaults.pod.resources,
-          },
+          // backend: {
+          //   resources: config.defaults.pod.resources,
+          // },
+          // frontend: {
+          //   resources: config.defaults.pod.resources,
+          // },
         },
       },
       operator: {
@@ -355,39 +355,40 @@ const cilium = new k8s.helm.v3.Release(
         prometheus: {
           enabled: true,
         },
-        resources: {
-          requests: {
-            memory: '64Mi',
-          },
-          limits: {
-            memory: '256Mi',
-          },
-        },
+        // resources: {
+        //   requests: {
+        //     memory: '64Mi',
+        //   },
+        //   limits: {
+        //     memory: '256Mi',
+        //   },
+        // },
       },
-      loadBalancer: {
-        algorithm: 'maglev',
-        mode: 'hybrid',
-        acceleration: 'best-effort',
-        l7: {
-          backend: 'envoy',
-        },
-      },
-      envoy: {
-        enabled: true,
-        rollOutPods: true,
-        resources: {
-          requests: {
-            memory: '64Mi',
-          },
-          limits: {
-            memory: '256Mi',
-          },
-        },
-      },
+      // loadBalancer: {
+      //   algorithm: 'maglev',
+      //   mode: 'hybrid',
+      //   acceleration: 'best-effort',
+      //   l7: {
+      //     backend: 'envoy',
+      //   },
+      // },
+      // envoy: {
+      //   enabled: true,
+      //   rollOutPods: true,
+      //   resources: {
+      //     requests: {
+      //       memory: '64Mi',
+      //     },
+      //     limits: {
+      //       memory: '256Mi',
+      //     },
+      //   },
+      // },
       routingMode: 'native',
-      bpf: {
-        masquerade: true,
-      },
+      egressMasqueradeInterfaces: 'eth0',
+      // bpf: {
+      //   masquerade: true,
+      // },
       ipam: {
         mode: 'eni',
       },
@@ -1412,7 +1413,7 @@ new k8s.apiextensions.CustomResource(
           },
           exclude: {
             resources: {
-              names: ['ct-apps-prod'],
+              namespaces: ['ct-apps-prod'],
             },
           },
           generate: {

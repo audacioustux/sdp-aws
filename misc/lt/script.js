@@ -5,10 +5,10 @@ export const options = {
   discardResponseBodies: true,
   scenarios: {
     ui: {
-      executor: "ramping-vus",
-      startVUs: 0,
-      stages: [{ duration: "5m", target: 100 }],
-      gracefulRampDown: "0s",
+      executor: "ramping-arrival-rate",
+      preAllocatedVUs: 100,
+      maxVUs: 1000,
+      stages: [{ duration: "10m", target: 100 }],
     },
   },
   thresholds: {
