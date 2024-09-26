@@ -218,10 +218,10 @@ const {
 
 // === EKS === Node Group ===
 
-const defaultNodeGroupName = nm('default')
-const defaultNodeGroup = new eks.ManagedNodeGroup(defaultNodeGroupName, {
+const spotNodeGroupName = nm('spot-node-group')
+const spotNodeGroup = new eks.ManagedNodeGroup(spotNodeGroupName, {
   cluster,
-  nodeGroupName: defaultNodeGroupName,
+  nodeGroupName: spotNodeGroupName,
   nodeRole: cluster.instanceRoles[0],
   subnetIds: privateSubnets.map((s) => s.id),
   capacityType: 'SPOT',
@@ -237,11 +237,11 @@ const defaultNodeGroup = new eks.ManagedNodeGroup(defaultNodeGroupName, {
   amiType: 'AL2023_ARM_64_STANDARD',
   // NOTE: large node size so the Pod limit is less likely to be reached
   // NOTE: t4g instances has larger Pod limit
-  instanceTypes: ['t4g.xlarge', 'm7g.xlarge', 'm6g.xlarge'],
+  instanceTypes: ['t4g.xlarge', 'm7g.xlarge', 'm7gd.xlarge', 'm6g.xlarge', 'm6gd.xlarge', 'r7g.xlarge', 't4g.large'],
   scalingConfig: {
-    minSize: 2,
-    maxSize: 2,
-    desiredSize: 2,
+    minSize: 1,
+    maxSize: 1,
+    desiredSize: 1,
   },
   labels: {
     'capacity-spread': '0',
@@ -251,6 +251,37 @@ const defaultNodeGroup = new eks.ManagedNodeGroup(defaultNodeGroupName, {
       key: 'node.cilium.io/agent-not-ready',
       value: 'true',
       effect: 'NO_EXECUTE',
+    },
+  ],
+})
+
+const onDemandNodeGroupName = nm('on-demand-node-group')
+const onDemandNodeGroup = new eks.ManagedNodeGroup(onDemandNodeGroupName, {
+  cluster,
+  nodeGroupName: onDemandNodeGroupName,
+  nodeRole: cluster.instanceRoles[0],
+  subnetIds: privateSubnets.map((s) => s.id),
+  capacityType: 'ON_DEMAND',
+  amiType: 'AL2023_ARM_64_STANDARD',
+  instanceTypes: ['t4g.large', 'm7g.large', 'm6g.large', 'r7g.large'],
+  scalingConfig: {
+    minSize: 1,
+    maxSize: 1,
+    desiredSize: 1,
+  },
+  labels: {
+    'capacity-spread': '20',
+  },
+  taints: [
+    {
+      key: 'node.cilium.io/agent-not-ready',
+      value: 'true',
+      effect: 'NO_EXECUTE',
+    },
+    {
+      key: 'node.sdp.aws/stability',
+      value: 'high',
+      effect: 'PREFER_NO_SCHEDULE',
     },
   ],
 })
@@ -1123,7 +1154,7 @@ const karpenter = new k8s.helm.v3.Release(
   },
   {
     provider,
-    dependsOn: [defaultNodeGroup],
+    dependsOn: [spotNodeGroup, onDemandNodeGroup, karpenterCRD],
   },
 )
 
