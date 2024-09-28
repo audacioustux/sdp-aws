@@ -46,7 +46,8 @@
     "ghcr.io/audacioustux/devcontainers/k9s": {},
     "ghcr.io/audacioustux/devcontainers/cilium": {},
     "ghcr.io/audacioustux/devcontainers/taskfile": {},
-    "ghcr.io/audacioustux/devcontainers/argo": {}
+    "ghcr.io/audacioustux/devcontainers/argo": {},
+    "ghcr.io/audacioustux/devcontainers/vegeta": {}
   },
   "updateContentCommand": "git clean -Xdf --exclude='!**/*.env'"
 }

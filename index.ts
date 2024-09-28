@@ -47,6 +47,7 @@ const publicSubnets = availabilityZones.map((az, index) => {
     mapPublicIpOnLaunch: true,
     tags: {
       Name: subnetName,
+      'kubernetes.io/role/elb': '1',
     },
   })
 })
@@ -59,6 +60,7 @@ const privateSubnets = availabilityZones.map((az, index) => {
     mapPublicIpOnLaunch: false,
     tags: {
       Name: subnetName,
+      'kubernetes.io/role/internal-elb': '1',
     },
   })
 })
@@ -333,7 +335,7 @@ const cilium = new k8s.helm.v3.Release(
     name: 'cilium',
     chart: 'cilium',
     namespace: 'kube-system',
-    version: '1.16.1',
+    version: '1.16.2',
     repositoryOpts: {
       repo: 'https://helm.cilium.io',
     },
@@ -347,17 +349,32 @@ const cilium = new k8s.helm.v3.Release(
       },
       k8sServiceHost: cluster.endpoint.apply((endpoint) => endpoint.replace('https://', '')),
       k8sServicePort: 443,
-      // bandwidthManager: {
-      //   enabled: true,
-      //   bbr: true,
-      // },
+      bandwidthManager: {
+        enabled: true,
+        bbr: true,
+      },
       ingressController: {
         enabled: true,
         loadbalancerMode: 'shared',
         default: true,
+        enableProxyProtocol: true,
         service: {
+          loadBalancerClass: 'service.k8s.aws/nlb',
           annotations: {
-            'service.beta.kubernetes.io/aws-load-balancer-type': 'nlb',
+            'service.beta.kubernetes.io/aws-load-balancer-type': 'external',
+            'service.beta.kubernetes.io/aws-load-balancer-scheme': 'internet-facing',
+            'service.beta.kubernetes.io/aws-load-balancer-nlb-target-type': 'instance',
+            'service.beta.kubernetes.io/aws-load-balancer-target-group-attributes': Object.entries({
+              'preserve_client_ip.enabled': 'true',
+              'proxy_protocol_v2.enabled': 'true',
+            })
+              .map(([k, v]) => `${k}=${v}`)
+              .join(','),
+            'service.beta.kubernetes.io/aws-load-balancer-additional-resource-tags': Object.entries(
+              config.defaults.tagsAll,
+            )
+              .map(([k, v]) => `${k}=${v}`)
+              .join(','),
           },
         },
       },
@@ -368,17 +385,10 @@ const cilium = new k8s.helm.v3.Release(
         relay: {
           rollOutPods: true,
           enabled: true,
-          // resources: config.defaults.pod.resources,
         },
         ui: {
           rollOutPods: true,
           enabled: true,
-          // backend: {
-          //   resources: config.defaults.pod.resources,
-          // },
-          // frontend: {
-          //   resources: config.defaults.pod.resources,
-          // },
         },
       },
       operator: {
@@ -386,37 +396,16 @@ const cilium = new k8s.helm.v3.Release(
         prometheus: {
           enabled: true,
         },
-        // resources: {
-        //   requests: {
-        //     memory: '64Mi',
-        //   },
-        //   limits: {
-        //     memory: '256Mi',
-        //   },
-        // },
       },
-      // loadBalancer: {
-      //   algorithm: 'maglev',
-      //   mode: 'hybrid',
-      //   acceleration: 'best-effort',
-      //   l7: {
-      //     backend: 'envoy',
-      //   },
-      // },
-      // envoy: {
-      //   enabled: true,
-      //   rollOutPods: true,
-      //   resources: {
-      //     requests: {
-      //       memory: '64Mi',
-      //     },
-      //     limits: {
-      //       memory: '256Mi',
-      //     },
-      //   },
-      // },
+      loadBalancer: {
+        algorithm: 'maglev',
+        mode: 'hybrid',
+      },
+      envoy: {
+        rollOutPods: true,
+      },
       routingMode: 'native',
-      egressMasqueradeInterfaces: 'eth0',
+      // egressMasqueradeInterfaces: 'eth0',
       // bpf: {
       //   masquerade: true,
       // },
@@ -1183,6 +1172,7 @@ const defaultNodeClass = new k8s.apiextensions.CustomResource(
           id: eksCluster.vpcConfig.clusterSecurityGroupId,
         },
       ],
+      tags: config.defaults.tagsAll,
     },
   },
   { provider, dependsOn: [karpenter] },
@@ -1254,7 +1244,7 @@ new k8s.apiextensions.CustomResource(
         consolidationPolicy: 'WhenEmptyOrUnderutilized',
         consolidateAfter: '1m',
       },
-      weight: 50,
+      weight: 100,
     },
   },
   { provider, dependsOn: [defaultNodeClass] },
@@ -2126,6 +2116,50 @@ new k8s.apiextensions.CustomResource(
   { provider, dependsOn: [certManager] },
 )
 
+// === EKS === AWS Load Balancer Controller ===
+
+const awsLoadBalancerControllerName = 'aws-load-balancer-controller'
+const awsLoadBalancerController = new k8s.helm.v3.Release(
+  nm(awsLoadBalancerControllerName),
+  {
+    name: awsLoadBalancerControllerName,
+    chart: 'aws-load-balancer-controller',
+    version: '1.8.4',
+    namespace: 'kube-system',
+    repositoryOpts: {
+      repo: 'https://aws.github.io/eks-charts',
+    },
+    maxHistory: 1,
+    values: {
+      clusterName: eksCluster.name,
+      region: regionId,
+      vpcId: eksCluster.vpcConfig.vpcId,
+      enableCertManager: true,
+    },
+  },
+  { provider },
+)
+const awsLoadBalancerControllerRoleName = nm(`${awsLoadBalancerControllerName}-role`)
+const awsLoadBalancerControllerRole = new aws.iam.Role(awsLoadBalancerControllerRoleName, {
+  assumeRolePolicy: assumeRoleForEKSPodIdentity(),
+})
+const awsLoadBalancerControllerPolicyName = nm(`${awsLoadBalancerControllerName}-policy`)
+const awsLoadBalancerControllerPolicy = new aws.iam.Policy(awsLoadBalancerControllerPolicyName, {
+  policy: await fetch(
+    'https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/main/docs/install/iam_policy.json',
+  ).then((res) => res.text()),
+})
+new aws.iam.RolePolicyAttachment(nm(`${awsLoadBalancerControllerName}-role-policy`), {
+  policyArn: awsLoadBalancerControllerPolicy.arn,
+  role: awsLoadBalancerControllerRole,
+})
+new aws.eks.PodIdentityAssociation(nm(`${awsLoadBalancerControllerName}-pod-identity`), {
+  clusterName: eksCluster.name,
+  namespace: 'kube-system',
+  serviceAccount: 'aws-load-balancer-controller',
+  roleArn: awsLoadBalancerControllerRole.arn,
+})
+
 // === EKS === Monitoring ===
 
 const monitoringNamespace = new k8s.core.v1.Namespace(
@@ -2899,6 +2933,7 @@ function registerHelmRelease(release: k8s.helm.v3.Release, project: string) {
   karpenter,
   externalDNS,
   certManager,
+  awsLoadBalancerController,
   metricsServer,
   kubePrometheusStack,
   // loki,
@@ -2911,7 +2946,7 @@ function registerHelmRelease(release: k8s.helm.v3.Release, project: string) {
   argocd,
   // TODO: configure argocd to play nicely with cilium
   // NOTE: https://docs.cilium.io/en/latest/configuration/argocd-issues/
-  cilium,
+  // cilium,
 ].forEach((release) => registerHelmRelease(release, project))
 
 // === Exports ===
