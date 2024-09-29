@@ -239,7 +239,8 @@ const spotNodeGroup = new eks.ManagedNodeGroup(spotNodeGroupName, {
   amiType: 'AL2023_ARM_64_STANDARD',
   // NOTE: large node size so the Pod limit is less likely to be reached
   // NOTE: t4g instances has larger Pod limit
-  instanceTypes: ['t4g.xlarge', 'm7g.xlarge', 'm7gd.xlarge', 'm6g.xlarge', 'm6gd.xlarge', 'r7g.xlarge'],
+  // instanceTypes: ['t4g.xlarge', 'm7g.xlarge', 'm7gd.xlarge', 'm6g.xlarge', 'm6gd.xlarge', 'r7g.xlarge'],
+  instanceTypes: ['t4g.large'],
   scalingConfig: {
     minSize: 1,
     maxSize: 1,
@@ -265,7 +266,8 @@ const onDemandNodeGroup = new eks.ManagedNodeGroup(onDemandNodeGroupName, {
   subnetIds: privateSubnets.map((s) => s.id),
   capacityType: 'ON_DEMAND',
   amiType: 'AL2023_ARM_64_STANDARD',
-  instanceTypes: ['t4g.large', 'm7g.large', 'm6g.large', 'r7g.large'],
+  // instanceTypes: ['t4g.large', 'm7g.large', 'm6g.large', 'r7g.large'],
+  instanceTypes: ['t4g.large'],
   scalingConfig: {
     minSize: 1,
     maxSize: 1,
