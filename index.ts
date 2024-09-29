@@ -369,6 +369,7 @@ const cilium = new k8s.helm.v3.Release(
             'service.beta.kubernetes.io/aws-load-balancer-target-group-attributes': Object.entries({
               'preserve_client_ip.enabled': 'true',
               'proxy_protocol_v2.enabled': 'true',
+              'deregistration_delay.timeout_seconds': '10',
             })
               .map(([k, v]) => `${k}=${v}`)
               .join(','),
@@ -1432,11 +1433,6 @@ new k8s.apiextensions.CustomResource(
           match: {
             resources: {
               kinds: ['Namespace'],
-            },
-          },
-          exclude: {
-            resources: {
-              namespaces: ['ct-apps-prod'],
             },
           },
           generate: {
