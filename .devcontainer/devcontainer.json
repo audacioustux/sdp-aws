@@ -1,5 +1,5 @@
 {
-  "name": "Dev Container - audacioustux/sdp-aws",
+  "name": "audacioustux/sdp-aws",
   "dockerComposeFile": "compose.yml",
   "service": "sdp-aws",
   "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
