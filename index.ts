@@ -239,15 +239,16 @@ const spotNodeGroup = new eks.ManagedNodeGroup(spotNodeGroupName, {
   amiType: 'AL2023_ARM_64_STANDARD',
   // NOTE: large node size so the Pod limit is less likely to be reached
   // NOTE: t4g instances has larger Pod limit
-  // instanceTypes: ['t4g.xlarge', 'm7g.xlarge', 'm7gd.xlarge', 'm6g.xlarge', 'm6gd.xlarge', 'r7g.xlarge'],
-  instanceTypes: ['t4g.large'],
+  instanceTypes: ['m7g.xlarge', 'm7gd.xlarge', 'm6g.xlarge', 'm6gd.xlarge', 't4g.xlarge'],
+  // instanceTypes: ['t4g.large'],
   scalingConfig: {
     minSize: 1,
     maxSize: 1,
     desiredSize: 1,
   },
   labels: {
-    'capacity-spread': '0',
+    'node.sdp.aws/capacity-type': 'spot',
+    'node.sdp.aws/capacity-spread': 'spot-1',
   },
   taints: [
     {
@@ -266,15 +267,15 @@ const onDemandNodeGroup = new eks.ManagedNodeGroup(onDemandNodeGroupName, {
   subnetIds: privateSubnets.map((s) => s.id),
   capacityType: 'ON_DEMAND',
   amiType: 'AL2023_ARM_64_STANDARD',
-  // instanceTypes: ['t4g.large', 'm7g.large', 'm6g.large', 'r7g.large'],
-  instanceTypes: ['t4g.large'],
+  instanceTypes: ['m7g.large', 'm7gd.large', 'm6g.large', 'm6gd.large', 't4g.large'],
   scalingConfig: {
     minSize: 1,
     maxSize: 1,
     desiredSize: 1,
   },
   labels: {
-    'capacity-spread': '20',
+    'node.sdp.aws/capacity-type': 'on-demand',
+    'node.sdp.aws/capacity-spread': 'on-demand-1',
   },
   taints: [
     {
@@ -283,7 +284,7 @@ const onDemandNodeGroup = new eks.ManagedNodeGroup(onDemandNodeGroupName, {
       effect: 'NO_EXECUTE',
     },
     {
-      key: 'node.sdp.aws/stability',
+      key: 'node.sdp.aws/priority',
       value: 'high',
       effect: 'PREFER_NO_SCHEDULE',
     },
@@ -292,6 +293,7 @@ const onDemandNodeGroup = new eks.ManagedNodeGroup(onDemandNodeGroupName, {
 
 // === EKS === Limit Range === Kube System ===
 
+// TODO: reduce default, set explicit resource requests & limits
 new k8s.core.v1.LimitRange(
   nm('kube-system-limit-range'),
   {
@@ -302,13 +304,7 @@ new k8s.core.v1.LimitRange(
     spec: {
       limits: [
         {
-          default: {
-            memory: '512Mi',
-          },
-          defaultRequest: {
-            memory: '256Mi',
-            cpu: '50m',
-          },
+          defaultRequest: config.defaults.pod.resources.requests,
           type: 'Container',
         },
       ],
@@ -445,7 +441,7 @@ new aws.eks.Addon(nm('coredns'), {
     },
     topologySpreadConstraints: [
       {
-        maxSkew: 1,
+        maxSkew: 2,
         minDomains: 2,
         topologyKey: 'kubernetes.io/hostname',
         whenUnsatisfiable: 'DoNotSchedule',
@@ -469,9 +465,9 @@ new aws.eks.Addon(nm('coredns'), {
         matchLabelKeys: ['pod-template-hash'],
       },
       {
-        maxSkew: 1,
+        maxSkew: 2,
         minDomains: 2,
-        topologyKey: 'capacity-spread',
+        topologyKey: 'node.sdp.aws/capacity-spread',
         whenUnsatisfiable: 'DoNotSchedule',
         labelSelector: {
           matchLabels: {
@@ -1212,15 +1208,27 @@ new k8s.apiextensions.CustomResource(
           terminationGracePeriod: '24h',
           requirements: [
             {
-              key: 'capacity-spread',
+              key: 'node.sdp.aws/capacity-type',
               operator: 'In',
-              values: ['0'],
+              values: ['spot'],
+            },
+            {
+              key: 'node.sdp.aws/capacity-spread',
+              operator: 'In',
+              values: ['spot-1'],
             },
             {
               key: 'kubernetes.io/arch',
               operator: 'In',
               values: ['arm64', 'amd64'],
             },
+            // avoid allocating too many small instances
+            // TODO: https://github.com/kubernetes-sigs/karpenter/issues/1664
+            // {
+            //   key: 'karpenter.k8s.aws/instance-memory',
+            //   operator: 'Gt',
+            //   values: [`${4 * 1024 - 1}`],
+            // },
             {
               key: 'kubernetes.io/os',
               operator: 'In',
@@ -1271,7 +1279,7 @@ new k8s.apiextensions.CustomResource(
           },
           taints: [
             {
-              key: 'node.sdp.aws/stability',
+              key: 'node.sdp.aws/priority',
               value: 'high',
               effect: 'PreferNoSchedule',
             },
@@ -1287,15 +1295,25 @@ new k8s.apiextensions.CustomResource(
           terminationGracePeriod: '24h',
           requirements: [
             {
-              key: 'capacity-spread',
+              key: 'node.sdp.aws/capacity-type',
               operator: 'In',
-              values: ['20'],
+              values: ['on-demand'],
+            },
+            {
+              key: 'node.sdp.aws/capacity-spread',
+              operator: 'In',
+              values: ['on-demand-1'],
             },
             {
               key: 'kubernetes.io/arch',
               operator: 'In',
               values: ['arm64', 'amd64'],
             },
+            // {
+            //   key: 'karpenter.k8s.aws/instance-memory',
+            //   operator: 'Gt',
+            //   values: [`${4 * 1024 - 1}`],
+            // },
             {
               key: 'kubernetes.io/os',
               operator: 'In',
@@ -1564,6 +1582,144 @@ new k8s.apiextensions.CustomResource(
 
 // === EKS === Spread Pods ===
 
+// TODO: apply for kube-system namespace
+const systemSpreadPods = 'system-spread-pods'
+new k8s.apiextensions.CustomResource(
+  nm(systemSpreadPods),
+  {
+    apiVersion: 'kyverno.io/v1',
+    kind: 'Policy',
+    metadata: {
+      name: systemSpreadPods,
+      namespace: 'kube-system',
+      annotations: {
+        'policies.kyverno.io/title': 'Spread Pods',
+        'policies.kyverno.io/subject': 'Deployment, Pod',
+        'policies.kyverno.io/description': `This policy ensures that Pods are spread across Nodes in the cluster. This is important for high availability and fault tolerance.`,
+      },
+    },
+    spec: {
+      rules: [
+        {
+          name: 'spread-deployment-pods',
+          match: {
+            any: [
+              {
+                resources: {
+                  kinds: ['Deployment'],
+                },
+              },
+            ],
+          },
+          preconditions: {
+            any: [
+              {
+                key: '{{ request.object.spec.replicas }}',
+                operator: 'GreaterThanOrEquals',
+                value: 2,
+              },
+            ],
+          },
+          mutate: {
+            patchStrategicMerge: {
+              spec: {
+                template: {
+                  spec: {
+                    '+(topologySpreadConstraints)': [
+                      {
+                        maxSkew: 2,
+                        minDomains: 2,
+                        topologyKey: 'kubernetes.io/hostname',
+                        whenUnsatisfiable: 'DoNotSchedule',
+                        labelSelector: '{{request.object.spec.selector}}',
+                        matchLabelKeys: ['pod-template-hash'],
+                      },
+                      {
+                        maxSkew: 2,
+                        minDomains: 2,
+                        topologyKey: 'topology.kubernetes.io/zone',
+                        whenUnsatisfiable: 'DoNotSchedule',
+                        labelSelector: '{{request.object.spec.selector}}',
+                        matchLabelKeys: ['pod-template-hash'],
+                      },
+                      {
+                        maxSkew: 1,
+                        minDomains: 2,
+                        topologyKey: 'node.sdp.aws/capacity-spread',
+                        whenUnsatisfiable: 'DoNotSchedule',
+                        labelSelector: '{{request.object.spec.selector}}',
+                        matchLabelKeys: ['pod-template-hash'],
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+          },
+        },
+        {
+          name: 'spread-statefulset-pods',
+          match: {
+            any: [
+              {
+                resources: {
+                  kinds: ['StatefulSet'],
+                },
+              },
+            ],
+          },
+          preconditions: {
+            any: [
+              {
+                key: '{{ request.object.spec.replicas }}',
+                operator: 'GreaterThanOrEquals',
+                value: 2,
+              },
+            ],
+          },
+          mutate: {
+            patchStrategicMerge: {
+              spec: {
+                template: {
+                  spec: {
+                    '+(topologySpreadConstraints)': [
+                      {
+                        maxSkew: 2,
+                        minDomains: 2,
+                        topologyKey: 'kubernetes.io/hostname',
+                        whenUnsatisfiable: 'DoNotSchedule',
+                        labelSelector: '{{request.object.spec.selector}}',
+                        matchLabelKeys: ['controller-revision-hash'],
+                      },
+                      {
+                        maxSkew: 2,
+                        minDomains: 2,
+                        topologyKey: 'topology.kubernetes.io/zone',
+                        whenUnsatisfiable: 'DoNotSchedule',
+                        labelSelector: '{{request.object.spec.selector}}',
+                        matchLabelKeys: ['controller-revision-hash'],
+                      },
+                      {
+                        maxSkew: 1,
+                        minDomains: 2,
+                        topologyKey: 'node.sdp.aws/capacity-spread',
+                        whenUnsatisfiable: 'DoNotSchedule',
+                        labelSelector: '{{request.object.spec.selector}}',
+                        matchLabelKeys: ['controller-revision-hash'],
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+          },
+        },
+      ],
+    },
+  },
+  { provider, dependsOn: [kyverno] },
+)
+
 const spreadPods = 'spread-pods'
 new k8s.apiextensions.CustomResource(
   nm(spreadPods),
@@ -1607,7 +1763,7 @@ new k8s.apiextensions.CustomResource(
                   spec: {
                     '+(topologySpreadConstraints)': [
                       {
-                        maxSkew: 1,
+                        maxSkew: 2,
                         minDomains: 2,
                         topologyKey: 'kubernetes.io/hostname',
                         whenUnsatisfiable: 'DoNotSchedule',
@@ -1625,7 +1781,7 @@ new k8s.apiextensions.CustomResource(
                       {
                         maxSkew: 1,
                         minDomains: 2,
-                        topologyKey: 'capacity-spread',
+                        topologyKey: 'node.sdp.aws/capacity-spread',
                         whenUnsatisfiable: 'DoNotSchedule',
                         labelSelector: '{{request.object.spec.selector}}',
                         matchLabelKeys: ['pod-template-hash'],
@@ -1664,7 +1820,7 @@ new k8s.apiextensions.CustomResource(
                   spec: {
                     '+(topologySpreadConstraints)': [
                       {
-                        maxSkew: 1,
+                        maxSkew: 2,
                         minDomains: 2,
                         topologyKey: 'kubernetes.io/hostname',
                         whenUnsatisfiable: 'DoNotSchedule',
@@ -1682,7 +1838,7 @@ new k8s.apiextensions.CustomResource(
                       {
                         maxSkew: 1,
                         minDomains: 2,
-                        topologyKey: 'capacity-spread',
+                        topologyKey: 'node.sdp.aws/capacity-spread',
                         whenUnsatisfiable: 'DoNotSchedule',
                         labelSelector: '{{request.object.spec.selector}}',
                         matchLabelKeys: ['controller-revision-hash'],
@@ -2808,7 +2964,6 @@ const argocd = new k8s.helm.v3.Release(
       repoServer: {
         resources: {
           requests: {
-            cpu: '100m',
             memory: '384Mi',
           },
           limits: {
@@ -2944,7 +3099,7 @@ function registerHelmRelease(release: k8s.helm.v3.Release, project: string) {
   argocd,
   // TODO: configure argocd to play nicely with cilium
   // NOTE: https://docs.cilium.io/en/latest/configuration/argocd-issues/
-  // cilium,
+  cilium,
 ].forEach((release) => registerHelmRelease(release, project))
 
 // === Exports ===
