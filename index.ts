@@ -218,7 +218,30 @@ const {
   instanceRole: eksInstanceRole,
 })
 
-// === EKS === Node Group ===
+// === EKS === Node Groups ===
+
+const nodegroupLaunchTemplateName = nm('nodegroup-launch-template')
+const nodegroupLaunchTemplate = new aws.ec2.LaunchTemplate(nodegroupLaunchTemplateName, {
+    namePrefix: nm('managed-ng-instance-'),
+    vpcSecurityGroupIds: [
+        cluster.eksCluster.vpcConfig.clusterSecurityGroupId, // this SG should be on all node to talk with control plane
+        nodeSecurityGroup.id
+    ],
+    tagSpecifications: [
+        {
+            resourceType: "instance",
+            tags: {
+                Name: `cloud-sandbox-${environment}-eks-node`,
+            },
+        },
+        {
+            resourceType: "volume",
+            tags: {
+                Name: `cloud-sandbox-${environment}-eks-node`,
+            },
+        },
+    ]
+})
 
 const spotNodeGroupName = nm('spot-node-group')
 const spotNodeGroup = new eks.ManagedNodeGroup(spotNodeGroupName, {
@@ -237,6 +260,22 @@ const spotNodeGroup = new eks.ManagedNodeGroup(spotNodeGroupName, {
   // kubeletExtraArgs: '--max-pods=150 --max-pods-per-core=40',
   // bootstrapExtraArgs: '--use-max-pods false',
   amiType: 'AL2023_ARM_64_STANDARD',
+  launchTemplate: {
+    name: nm('spot-node-group-lt'),
+    version: '$Latest',
+    instanceType: 'm6g.xlarge',
+    keyName: 'eks-key',
+    securityGroupIds: [cluster.instanceSecurityGroup.id],
+    userData: pulumi.output(cluster.eksCluster.id).apply((id) => {
+      const userData = `#!/bin/bash
+set -o xtrace
+/etc/eks/bootstrap.sh ${id}
+/etc/eks/bootstrap-extra.sh ${id}
+`
+      return pulumi.interpolate`${userData}`
+    }
+  },
+  
   // NOTE: large node size so the Pod limit is less likely to be reached
   // NOTE: t4g instances has larger Pod limit
   instanceTypes: ['m7g.xlarge', 'm7gd.xlarge', 'm6g.xlarge', 'm6gd.xlarge', 't4g.xlarge'],

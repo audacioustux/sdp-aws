@@ -47,7 +47,12 @@
     "ghcr.io/audacioustux/devcontainers/cilium": {},
     "ghcr.io/audacioustux/devcontainers/taskfile": {},
     "ghcr.io/audacioustux/devcontainers/argo": {},
-    "ghcr.io/audacioustux/devcontainers/vegeta": {}
+    "ghcr.io/audacioustux/devcontainers/vegeta": {},
+    "ghcr.io/devcontainers/features/python": {
+      "toolsToInstall": [
+        "git-remote-codecommit"
+      ]
+    }
   },
   "updateContentCommand": "git clean -Xdf --exclude='!**/*.env'"
 }
