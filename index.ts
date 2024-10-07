@@ -1226,6 +1226,7 @@ new k8s.apiextensions.CustomResource(
             },
             // avoid allocating too many small instances
             // TODO: https://github.com/kubernetes-sigs/karpenter/issues/1664
+            // TODO: https://github.com/kubernetes-sigs/karpenter/issues/919
             {
               key: 'karpenter.k8s.aws/instance-memory',
               operator: 'Gt',
