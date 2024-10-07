@@ -193,7 +193,9 @@ const eksInstanceRole = new aws.iam.Role(nm('eks-instance-role'), {
     ecrPullThroughPolicy.arn,
   ],
 })
-// TODO: add kyverno policy to update image registry to ECR (pull through) automatically
+
+// TODO: aad warmpool
+// NOTE: https://github.com/aws/karpenter-provider-aws/issues/4354
 
 const eksClusterName = nm('eks')
 const {
@@ -216,32 +218,10 @@ const {
   // endpointPublicAccess: false,
   skipDefaultNodeGroup: true,
   instanceRole: eksInstanceRole,
+  clusterTags: config.defaults.tagsAll,
 })
 
-// === EKS === Node Groups ===
-
-const nodegroupLaunchTemplateName = nm('nodegroup-launch-template')
-const nodegroupLaunchTemplate = new aws.ec2.LaunchTemplate(nodegroupLaunchTemplateName, {
-    namePrefix: nm('managed-ng-instance-'),
-    vpcSecurityGroupIds: [
-        cluster.eksCluster.vpcConfig.clusterSecurityGroupId, // this SG should be on all node to talk with control plane
-        nodeSecurityGroup.id
-    ],
-    tagSpecifications: [
-        {
-            resourceType: "instance",
-            tags: {
-                Name: `cloud-sandbox-${environment}-eks-node`,
-            },
-        },
-        {
-            resourceType: "volume",
-            tags: {
-                Name: `cloud-sandbox-${environment}-eks-node`,
-            },
-        },
-    ]
-})
+// === EKS === Node Group ===
 
 const spotNodeGroupName = nm('spot-node-group')
 const spotNodeGroup = new eks.ManagedNodeGroup(spotNodeGroupName, {
@@ -256,30 +236,13 @@ const spotNodeGroup = new eks.ManagedNodeGroup(spotNodeGroupName, {
   // NOTE: https://github.com/bottlerocket-os/bottlerocket/issues/1721
   // NOTE: https://github.com/cilium/cilium/issues/32616#issuecomment-2126367506
   // amiType: 'BOTTLEROCKET_ARM_64',
-  // instanceTypes: ['m7g.medium', 'm7gd.medium', 't4g.medium', 'r7g.medium'],
   // kubeletExtraArgs: '--max-pods=150 --max-pods-per-core=40',
   // bootstrapExtraArgs: '--use-max-pods false',
   amiType: 'AL2023_ARM_64_STANDARD',
-  launchTemplate: {
-    name: nm('spot-node-group-lt'),
-    version: '$Latest',
-    instanceType: 'm6g.xlarge',
-    keyName: 'eks-key',
-    securityGroupIds: [cluster.instanceSecurityGroup.id],
-    userData: pulumi.output(cluster.eksCluster.id).apply((id) => {
-      const userData = `#!/bin/bash
-set -o xtrace
-/etc/eks/bootstrap.sh ${id}
-/etc/eks/bootstrap-extra.sh ${id}
-`
-      return pulumi.interpolate`${userData}`
-    }
-  },
-  
   // NOTE: large node size so the Pod limit is less likely to be reached
   // NOTE: t4g instances has larger Pod limit
-  instanceTypes: ['m7g.xlarge', 'm7gd.xlarge', 'm6g.xlarge', 'm6gd.xlarge', 't4g.xlarge'],
-  // instanceTypes: ['t4g.large'],
+  // instanceTypes: ['t4g.xlarge', 'm7g.xlarge', 'm7gd.xlarge', 'm6g.xlarge', 'm6gd.xlarge'],
+  instanceTypes: ['t4g.large'],
   scalingConfig: {
     minSize: 1,
     maxSize: 1,
@@ -306,7 +269,7 @@ const onDemandNodeGroup = new eks.ManagedNodeGroup(onDemandNodeGroupName, {
   subnetIds: privateSubnets.map((s) => s.id),
   capacityType: 'ON_DEMAND',
   amiType: 'AL2023_ARM_64_STANDARD',
-  instanceTypes: ['m7g.large', 'm7gd.large', 'm6g.large', 'm6gd.large', 't4g.large'],
+  instanceTypes: ['t4g.large', 'm7g.large', 'm7gd.large', 'm6g.large', 'm6gd.large'],
   scalingConfig: {
     minSize: 1,
     maxSize: 1,
@@ -504,7 +467,7 @@ new aws.eks.Addon(nm('coredns'), {
         matchLabelKeys: ['pod-template-hash'],
       },
       {
-        maxSkew: 2,
+        maxSkew: 1,
         minDomains: 2,
         topologyKey: 'node.sdp.aws/capacity-spread',
         whenUnsatisfiable: 'DoNotSchedule',
@@ -1150,7 +1113,7 @@ const karpenterCRD = new k8s.helm.v3.Release(
     name: 'karpenter-crd',
     chart: 'oci://public.ecr.aws/karpenter/karpenter-crd',
     namespace: 'kube-system',
-    version: '1.0.1',
+    version: '1.0.4',
     maxHistory: 1,
   },
   { provider },
@@ -1263,11 +1226,11 @@ new k8s.apiextensions.CustomResource(
             },
             // avoid allocating too many small instances
             // TODO: https://github.com/kubernetes-sigs/karpenter/issues/1664
-            // {
-            //   key: 'karpenter.k8s.aws/instance-memory',
-            //   operator: 'Gt',
-            //   values: [`${4 * 1024 - 1}`],
-            // },
+            {
+              key: 'karpenter.k8s.aws/instance-memory',
+              operator: 'Gt',
+              values: [`${8 * 1024 - 1}`],
+            },
             {
               key: 'kubernetes.io/os',
               operator: 'In',
@@ -1348,11 +1311,11 @@ new k8s.apiextensions.CustomResource(
               operator: 'In',
               values: ['arm64', 'amd64'],
             },
-            // {
-            //   key: 'karpenter.k8s.aws/instance-memory',
-            //   operator: 'Gt',
-            //   values: [`${4 * 1024 - 1}`],
-            // },
+            {
+              key: 'karpenter.k8s.aws/instance-memory',
+              operator: 'Gt',
+              values: [`${4 * 1024 - 1}`],
+            },
             {
               key: 'kubernetes.io/os',
               operator: 'In',
@@ -3153,4 +3116,14 @@ export const clusterIssuers = {
   letsencryptStaging: letsencryptStagingIssuerName,
   zerosslProd: zerosslProdIssuerName,
 }
-export { kubeconfig, publicRouteTable, privateRouteTable, vpc, eksCluster, kmsKey, argocdPassword, grafanaPassword }
+export {
+  kubeconfig,
+  publicRouteTable,
+  privateRouteTable,
+  vpc,
+  eksCluster,
+  cluster,
+  kmsKey,
+  argocdPassword,
+  grafanaPassword,
+}
