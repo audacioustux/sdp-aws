@@ -6,6 +6,7 @@ import { registerAutoTags } from './utils/autoTag.ts'
 import * as config from './config.ts'
 import { assumeRoleForEKSPodIdentity } from './utils/policyStatement.ts'
 import * as random from '@pulumi/random'
+import R from 'ramda'
 
 const partitionId = await aws.getPartition().then((partition) => partition.id)
 const regionId = await aws.getRegion().then((region) => region.id)
@@ -250,7 +251,7 @@ const spotNodeGroup = new eks.ManagedNodeGroup(spotNodeGroupName, {
   },
   labels: {
     'node.sdp.aws/capacity-type': 'spot',
-    'node.sdp.aws/capacity-spread': 'spot-1',
+    'node.sdp.aws/capacity-partition': 'spot-1',
   },
   taints: [
     {
@@ -277,7 +278,7 @@ const onDemandNodeGroup = new eks.ManagedNodeGroup(onDemandNodeGroupName, {
   },
   labels: {
     'node.sdp.aws/capacity-type': 'on-demand',
-    'node.sdp.aws/capacity-spread': 'on-demand-1',
+    'node.sdp.aws/capacity-partition': 'on-demand-1',
   },
   taints: [
     {
@@ -286,8 +287,8 @@ const onDemandNodeGroup = new eks.ManagedNodeGroup(onDemandNodeGroupName, {
       effect: 'NO_EXECUTE',
     },
     {
-      key: 'node.sdp.aws/priority',
-      value: 'high',
+      key: 'node.sdp.aws/reserved',
+      value: 'dedicated',
       effect: 'PREFER_NO_SCHEDULE',
     },
   ],
@@ -441,44 +442,6 @@ new aws.eks.Addon(nm('coredns'), {
     autoScaling: {
       enabled: true,
     },
-    topologySpreadConstraints: [
-      {
-        maxSkew: 2,
-        minDomains: 2,
-        topologyKey: 'kubernetes.io/hostname',
-        whenUnsatisfiable: 'DoNotSchedule',
-        labelSelector: {
-          matchLabels: {
-            'k8s-app': 'kube-dns',
-          },
-        },
-        matchLabelKeys: ['pod-template-hash'],
-      },
-      {
-        maxSkew: 2,
-        minDomains: 2,
-        topologyKey: 'topology.kubernetes.io/zone',
-        whenUnsatisfiable: 'DoNotSchedule',
-        labelSelector: {
-          matchLabels: {
-            'k8s-app': 'kube-dns',
-          },
-        },
-        matchLabelKeys: ['pod-template-hash'],
-      },
-      {
-        maxSkew: 1,
-        minDomains: 2,
-        topologyKey: 'node.sdp.aws/capacity-spread',
-        whenUnsatisfiable: 'DoNotSchedule',
-        labelSelector: {
-          matchLabels: {
-            'k8s-app': 'kube-dns',
-          },
-        },
-        matchLabelKeys: ['pod-template-hash'],
-      },
-    ],
   }),
   resolveConflictsOnUpdate: 'OVERWRITE',
 })
@@ -1215,7 +1178,7 @@ new k8s.apiextensions.CustomResource(
               values: ['spot'],
             },
             {
-              key: 'node.sdp.aws/capacity-spread',
+              key: 'node.sdp.aws/capacity-partition',
               operator: 'In',
               values: ['spot-1'],
             },
@@ -1282,8 +1245,8 @@ new k8s.apiextensions.CustomResource(
           },
           taints: [
             {
-              key: 'node.sdp.aws/priority',
-              value: 'high',
+              key: 'node.sdp.aws/reserved',
+              value: 'dedicated',
               effect: 'PreferNoSchedule',
             },
           ],
@@ -1303,7 +1266,7 @@ new k8s.apiextensions.CustomResource(
               values: ['on-demand'],
             },
             {
-              key: 'node.sdp.aws/capacity-spread',
+              key: 'node.sdp.aws/capacity-partition',
               operator: 'In',
               values: ['on-demand-1'],
             },
@@ -1421,6 +1384,28 @@ const kyverno = new k8s.helm.v3.Release(
   },
   { provider },
 )
+
+// new k8s.rbac.v1.ClusterRole(
+//   nm('kyverno-background-controller'),
+//   {
+//     metadata: {
+//       name: 'kyverno:update-apps',
+//       labels: {
+//         'app.kubernetes.io/component': 'background-controller',
+//         'app.kubernetes.io/instance': 'kyverno',
+//         'app.kubernetes.io/part-of': 'kyverno',
+//       },
+//     },
+//     rules: [
+//       {
+//         apiGroups: ['apps'],
+//         resources: ['deployments', 'statefulsets'],
+//         verbs: ['update'],
+//       },
+//     ],
+//   },
+//   { provider },
+// )
 
 // TODO: enable kyverno policies from https://github.com/kyverno/policies
 // TODO: use a directory of policies to apply with ArgoCD
@@ -1585,152 +1570,14 @@ new k8s.apiextensions.CustomResource(
 
 // === EKS === Spread Pods ===
 
-// TODO: apply for kube-system namespace
-const systemSpreadPods = 'system-spread-pods'
+const spreadPodsPolicyName = 'spread-pods'
 new k8s.apiextensions.CustomResource(
-  nm(systemSpreadPods),
-  {
-    apiVersion: 'kyverno.io/v1',
-    kind: 'Policy',
-    metadata: {
-      name: systemSpreadPods,
-      namespace: 'kube-system',
-      annotations: {
-        'policies.kyverno.io/title': 'Spread Pods',
-        'policies.kyverno.io/subject': 'Deployment, Pod',
-        'policies.kyverno.io/description': `This policy ensures that Pods are spread across Nodes in the cluster. This is important for high availability and fault tolerance.`,
-      },
-    },
-    spec: {
-      rules: [
-        {
-          name: 'spread-deployment-pods',
-          match: {
-            any: [
-              {
-                resources: {
-                  kinds: ['Deployment'],
-                },
-              },
-            ],
-          },
-          preconditions: {
-            any: [
-              {
-                key: '{{ request.object.spec.replicas }}',
-                operator: 'GreaterThanOrEquals',
-                value: 2,
-              },
-            ],
-          },
-          mutate: {
-            patchStrategicMerge: {
-              spec: {
-                template: {
-                  spec: {
-                    '+(topologySpreadConstraints)': [
-                      {
-                        maxSkew: 2,
-                        minDomains: 2,
-                        topologyKey: 'kubernetes.io/hostname',
-                        whenUnsatisfiable: 'DoNotSchedule',
-                        labelSelector: '{{request.object.spec.selector}}',
-                        matchLabelKeys: ['pod-template-hash'],
-                      },
-                      {
-                        maxSkew: 2,
-                        minDomains: 2,
-                        topologyKey: 'topology.kubernetes.io/zone',
-                        whenUnsatisfiable: 'DoNotSchedule',
-                        labelSelector: '{{request.object.spec.selector}}',
-                        matchLabelKeys: ['pod-template-hash'],
-                      },
-                      {
-                        maxSkew: 1,
-                        minDomains: 2,
-                        topologyKey: 'node.sdp.aws/capacity-spread',
-                        whenUnsatisfiable: 'DoNotSchedule',
-                        labelSelector: '{{request.object.spec.selector}}',
-                        matchLabelKeys: ['pod-template-hash'],
-                      },
-                    ],
-                  },
-                },
-              },
-            },
-          },
-        },
-        {
-          name: 'spread-statefulset-pods',
-          match: {
-            any: [
-              {
-                resources: {
-                  kinds: ['StatefulSet'],
-                },
-              },
-            ],
-          },
-          preconditions: {
-            any: [
-              {
-                key: '{{ request.object.spec.replicas }}',
-                operator: 'GreaterThanOrEquals',
-                value: 2,
-              },
-            ],
-          },
-          mutate: {
-            patchStrategicMerge: {
-              spec: {
-                template: {
-                  spec: {
-                    '+(topologySpreadConstraints)': [
-                      {
-                        maxSkew: 2,
-                        minDomains: 2,
-                        topologyKey: 'kubernetes.io/hostname',
-                        whenUnsatisfiable: 'DoNotSchedule',
-                        labelSelector: '{{request.object.spec.selector}}',
-                        matchLabelKeys: ['controller-revision-hash'],
-                      },
-                      {
-                        maxSkew: 2,
-                        minDomains: 2,
-                        topologyKey: 'topology.kubernetes.io/zone',
-                        whenUnsatisfiable: 'DoNotSchedule',
-                        labelSelector: '{{request.object.spec.selector}}',
-                        matchLabelKeys: ['controller-revision-hash'],
-                      },
-                      {
-                        maxSkew: 1,
-                        minDomains: 2,
-                        topologyKey: 'node.sdp.aws/capacity-spread',
-                        whenUnsatisfiable: 'DoNotSchedule',
-                        labelSelector: '{{request.object.spec.selector}}',
-                        matchLabelKeys: ['controller-revision-hash'],
-                      },
-                    ],
-                  },
-                },
-              },
-            },
-          },
-        },
-      ],
-    },
-  },
-  { provider, dependsOn: [kyverno] },
-)
-
-const spreadPods = 'spread-pods'
-new k8s.apiextensions.CustomResource(
-  nm(spreadPods),
+  nm(spreadPodsPolicyName),
   {
     apiVersion: 'kyverno.io/v1',
     kind: 'ClusterPolicy',
     metadata: {
-      name: spreadPods,
+      name: spreadPodsPolicyName,
       annotations: {
         'policies.kyverno.io/title': 'Spread Pods',
         'policies.kyverno.io/subject': 'Deployment, Pod',
@@ -1740,75 +1587,14 @@ new k8s.apiextensions.CustomResource(
     spec: {
       rules: [
         {
-          name: 'spread-deployment-pods',
+          name: spreadPodsPolicyName,
           match: {
-            any: [
-              {
-                resources: {
-                  kinds: ['Deployment'],
-                },
-              },
-            ],
-          },
-          preconditions: {
-            any: [
-              {
-                key: '{{ request.object.spec.replicas }}',
-                operator: 'GreaterThanOrEquals',
-                value: 2,
-              },
-            ],
-          },
-          mutate: {
-            patchStrategicMerge: {
-              spec: {
-                template: {
-                  spec: {
-                    '+(topologySpreadConstraints)': [
-                      {
-                        maxSkew: 2,
-                        minDomains: 2,
-                        topologyKey: 'kubernetes.io/hostname',
-                        whenUnsatisfiable: 'DoNotSchedule',
-                        labelSelector: '{{request.object.spec.selector}}',
-                        matchLabelKeys: ['pod-template-hash'],
-                      },
-                      {
-                        maxSkew: 2,
-                        minDomains: 2,
-                        topologyKey: 'topology.kubernetes.io/zone',
-                        whenUnsatisfiable: 'DoNotSchedule',
-                        labelSelector: '{{request.object.spec.selector}}',
-                        matchLabelKeys: ['pod-template-hash'],
-                      },
-                      {
-                        maxSkew: 1,
-                        minDomains: 2,
-                        topologyKey: 'node.sdp.aws/capacity-spread',
-                        whenUnsatisfiable: 'DoNotSchedule',
-                        labelSelector: '{{request.object.spec.selector}}',
-                        matchLabelKeys: ['pod-template-hash'],
-                      },
-                    ],
-                  },
-                },
-              },
+            resources: {
+              kinds: ['Deployment', 'StatefulSet'],
             },
           },
-        },
-        {
-          name: 'spread-statefulset-pods',
-          match: {
-            any: [
-              {
-                resources: {
-                  kinds: ['StatefulSet'],
-                },
-              },
-            ],
-          },
           preconditions: {
-            any: [
+            all: [
               {
                 key: '{{ request.object.spec.replicas }}',
                 operator: 'GreaterThanOrEquals',
@@ -1828,7 +1614,7 @@ new k8s.apiextensions.CustomResource(
                         topologyKey: 'kubernetes.io/hostname',
                         whenUnsatisfiable: 'DoNotSchedule',
                         labelSelector: '{{request.object.spec.selector}}',
-                        matchLabelKeys: ['controller-revision-hash'],
+                        matchLabelKeys: ['pod-template-hash', 'controller-revision-hash'],
                       },
                       {
                         maxSkew: 2,
@@ -1836,15 +1622,15 @@ new k8s.apiextensions.CustomResource(
                         topologyKey: 'topology.kubernetes.io/zone',
                         whenUnsatisfiable: 'DoNotSchedule',
                         labelSelector: '{{request.object.spec.selector}}',
-                        matchLabelKeys: ['controller-revision-hash'],
+                        matchLabelKeys: ['pod-template-hash', 'controller-revision-hash'],
                       },
                       {
                         maxSkew: 1,
                         minDomains: 2,
-                        topologyKey: 'node.sdp.aws/capacity-spread',
+                        topologyKey: 'node.sdp.aws/capacity-partition',
                         whenUnsatisfiable: 'DoNotSchedule',
                         labelSelector: '{{request.object.spec.selector}}',
-                        matchLabelKeys: ['controller-revision-hash'],
+                        matchLabelKeys: ['pod-template-hash', 'controller-revision-hash'],
                       },
                     ],
                   },
@@ -1895,12 +1681,11 @@ new k8s.apiextensions.CustomResource(
         'kyverno.io/kyverno-version': kyverno.version,
         'kyverno.io/kubernetes-version': eksCluster.version,
         'policies.kyverno.io/subject': 'PriorityClass',
-        'policies.kyverno.io/description': `DaemonSets are critical to the functioning of the cluster. This policy ensures that all DaemonSets have a PriorityClass set. This allows the DaemonSets to be rescheduled in the event of a node failure.`,
+        'policies.kyverno.io/description': `DaemonSets are critical to the functioning of the cluster. This policy ensures that all DaemonSets have a PriorityClass set to ensure they are not evicted and more likely to be scheduled.`,
       },
     },
     spec: {
       rules: [
-        // patch all DaemonSets to set the priority class if not already set
         {
           name: addDefaultDaemonsetPriorityClass,
           match: {
@@ -2406,6 +2191,7 @@ const kubePrometheusStack = new k8s.helm.v3.Release(
           probeSelectorNilUsesHelmValues: false,
           resources: {
             requests: {
+              cpu: '500m',
               memory: '2Gi',
             },
             limits: {
@@ -2864,6 +2650,24 @@ const velero = new k8s.helm.v3.Release(
   { provider },
 )
 
+// === EKS === Keda ===
+
+const kedaNamespace = new k8s.core.v1.Namespace(nm('keda'), { metadata: { name: 'keda' } }, { provider })
+const keda = new k8s.helm.v3.Release(
+  nm('keda'),
+  {
+    name: 'keda',
+    chart: 'keda',
+    version: '2.15.1',
+    namespace: kedaNamespace.metadata.name,
+    repositoryOpts: {
+      repo: 'https://kedacore.github.io/charts',
+    },
+    maxHistory: 1,
+  },
+  { provider },
+)
+
 // === EKS === Argo Workflow ===
 
 const argoNamespace = new k8s.core.v1.Namespace(nm('argo'), { metadata: { name: 'argo' } }, { provider })
@@ -2924,7 +2728,7 @@ const argocd = new k8s.helm.v3.Release(
     name: 'argocd',
     chart: 'argo-cd',
     namespace: argocdNamespace.metadata.name,
-    version: '7.3.3',
+    version: '7.6.8',
     maxHistory: 1,
     repositoryOpts: {
       repo: 'https://argoproj.github.io/argo-helm',
@@ -2942,7 +2746,6 @@ const argocd = new k8s.helm.v3.Release(
         domain: config.argocd.host,
       },
       server: {
-        replicas: 2,
         ingress: {
           enabled: true,
           annotations: {
@@ -2954,7 +2757,8 @@ const argocd = new k8s.helm.v3.Release(
       controller: {
         resources: {
           requests: {
-            memory: '2Gi',
+            cpu: '100m',
+            memory: '1Gi',
           },
           limits: {
             memory: '4Gi',
@@ -2967,7 +2771,7 @@ const argocd = new k8s.helm.v3.Release(
       repoServer: {
         resources: {
           requests: {
-            memory: '384Mi',
+            memory: '256Mi',
           },
           limits: {
             memory: '512Mi',
@@ -3098,6 +2902,7 @@ function registerHelmRelease(release: k8s.helm.v3.Release, project: string) {
   vpa,
   kyverno,
   velero,
+  keda,
   argo,
   argocd,
   // TODO: configure argocd to play nicely with cilium
@@ -3117,14 +2922,4 @@ export const clusterIssuers = {
   letsencryptStaging: letsencryptStagingIssuerName,
   zerosslProd: zerosslProdIssuerName,
 }
-export {
-  kubeconfig,
-  publicRouteTable,
-  privateRouteTable,
-  vpc,
-  eksCluster,
-  cluster,
-  kmsKey,
-  argocdPassword,
-  grafanaPassword,
-}
+export { kubeconfig, publicRouteTable, privateRouteTable, vpc, eksCluster, kmsKey, argocdPassword, grafanaPassword }

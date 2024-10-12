@@ -10,6 +10,7 @@ const defaults = {
   pod: {
     resources: {
       requests: {
+        cpu: '20m',
         memory: '64Mi',
       },
       limits: {

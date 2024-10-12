@@ -31,10 +31,7 @@ tasks:
   ecr:public:login:
     deps: [docker:logout]
     cmd: aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin 343301376154.dkr.ecr.ap-south-1.amazonaws.com
-  ect:private:login: aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin 147303785652.dkr.ecr.ap-south-1.amazonaws.com
-  kubeconfig:update:
-    cmd: mkdir -p ~/.kube && pulumi stack -s prod output kubeconfig > ~/.kube/config
-    generates: [~/.kube/config]
+  ecr:private:login: aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin 147303785652.dkr.ecr.ap-south-1.amazonaws.com
   argo:password: argo auth token
   argo:port-forward: kubectl port-forward -n argo svc/argo-server 2746
   argocd:password:
@@ -53,6 +50,9 @@ tasks:
   hubble:ui:
     deps: [kubeconfig:update]
     cmd: cilium hubble ui
+  kubeconfig:update:
+    cmd: mkdir -p ~/.kube && pulumi stack -s prod output kubeconfig > ~/.kube/config
+    generates: [~/.kube/config]
   k9s:
     deps: [kubeconfig:update]
     cmd: k9s -A --headless --crumbsless
