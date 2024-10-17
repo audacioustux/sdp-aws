@@ -6,7 +6,6 @@ import { registerAutoTags } from './utils/autoTag.ts'
 import * as config from './config.ts'
 import { assumeRoleForEKSPodIdentity } from './utils/policyStatement.ts'
 import * as random from '@pulumi/random'
-import R from 'ramda'
 
 const partitionId = await aws.getPartition().then((partition) => partition.id)
 const regionId = await aws.getRegion().then((region) => region.id)
@@ -1169,7 +1168,7 @@ new k8s.apiextensions.CustomResource(
               effect: 'NoExecute',
             },
           ],
-          expireAfter: `${24 * 30}h`,
+          expireAfter: `${24 * 7}h`,
           terminationGracePeriod: '24h',
           requirements: [
             {
@@ -1180,7 +1179,7 @@ new k8s.apiextensions.CustomResource(
             {
               key: 'node.sdp.aws/capacity-partition',
               operator: 'In',
-              values: ['spot-1'],
+              values: ['spot-1', 'spot-2'],
             },
             {
               key: 'kubernetes.io/arch',
@@ -1190,11 +1189,11 @@ new k8s.apiextensions.CustomResource(
             // avoid allocating too many small instances
             // TODO: https://github.com/kubernetes-sigs/karpenter/issues/1664
             // TODO: https://github.com/kubernetes-sigs/karpenter/issues/919
-            {
-              key: 'karpenter.k8s.aws/instance-memory',
-              operator: 'Gt',
-              values: [`${8 * 1024 - 1}`],
-            },
+            // {
+            //   key: 'karpenter.k8s.aws/instance-memory',
+            //   operator: 'Gt',
+            //   values: [`${8 * 1024 - 1}`],
+            // },
             {
               key: 'kubernetes.io/os',
               operator: 'In',
@@ -1275,11 +1274,11 @@ new k8s.apiextensions.CustomResource(
               operator: 'In',
               values: ['arm64', 'amd64'],
             },
-            {
-              key: 'karpenter.k8s.aws/instance-memory',
-              operator: 'Gt',
-              values: [`${4 * 1024 - 1}`],
-            },
+            // {
+            //   key: 'karpenter.k8s.aws/instance-memory',
+            //   operator: 'Gt',
+            //   values: [`${4 * 1024 - 1}`],
+            // },
             {
               key: 'kubernetes.io/os',
               operator: 'In',
@@ -1610,7 +1609,6 @@ new k8s.apiextensions.CustomResource(
                     '+(topologySpreadConstraints)': [
                       {
                         maxSkew: 2,
-                        minDomains: 2,
                         topologyKey: 'kubernetes.io/hostname',
                         whenUnsatisfiable: 'DoNotSchedule',
                         labelSelector: '{{request.object.spec.selector}}',
@@ -1618,7 +1616,6 @@ new k8s.apiextensions.CustomResource(
                       },
                       {
                         maxSkew: 2,
-                        minDomains: 2,
                         topologyKey: 'topology.kubernetes.io/zone',
                         whenUnsatisfiable: 'DoNotSchedule',
                         labelSelector: '{{request.object.spec.selector}}',
@@ -1626,7 +1623,6 @@ new k8s.apiextensions.CustomResource(
                       },
                       {
                         maxSkew: 1,
-                        minDomains: 2,
                         topologyKey: 'node.sdp.aws/capacity-partition',
                         whenUnsatisfiable: 'DoNotSchedule',
                         labelSelector: '{{request.object.spec.selector}}',
@@ -2191,7 +2187,7 @@ const kubePrometheusStack = new k8s.helm.v3.Release(
           probeSelectorNilUsesHelmValues: false,
           resources: {
             requests: {
-              cpu: '500m',
+              cpu: '200m',
               memory: '2Gi',
             },
             limits: {
