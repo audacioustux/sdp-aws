@@ -1179,7 +1179,7 @@ new k8s.apiextensions.CustomResource(
             {
               key: 'node.sdp.aws/capacity-partition',
               operator: 'In',
-              values: ['spot-1', 'spot-2'],
+              values: ['spot-1'],
             },
             {
               key: 'kubernetes.io/arch',
@@ -1189,11 +1189,11 @@ new k8s.apiextensions.CustomResource(
             // avoid allocating too many small instances
             // TODO: https://github.com/kubernetes-sigs/karpenter/issues/1664
             // TODO: https://github.com/kubernetes-sigs/karpenter/issues/919
-            // {
-            //   key: 'karpenter.k8s.aws/instance-memory',
-            //   operator: 'Gt',
-            //   values: [`${8 * 1024 - 1}`],
-            // },
+            {
+              key: 'karpenter.k8s.aws/instance-memory',
+              operator: 'Gt',
+              values: [`${16 * 1024 - 1}`],
+            },
             {
               key: 'kubernetes.io/os',
               operator: 'In',
@@ -1274,11 +1274,11 @@ new k8s.apiextensions.CustomResource(
               operator: 'In',
               values: ['arm64', 'amd64'],
             },
-            // {
-            //   key: 'karpenter.k8s.aws/instance-memory',
-            //   operator: 'Gt',
-            //   values: [`${4 * 1024 - 1}`],
-            // },
+            {
+              key: 'karpenter.k8s.aws/instance-memory',
+              operator: 'Gt',
+              values: [`${4 * 1024 - 1}`],
+            },
             {
               key: 'kubernetes.io/os',
               operator: 'In',
