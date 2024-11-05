@@ -1192,7 +1192,7 @@ new k8s.apiextensions.CustomResource(
             {
               key: 'karpenter.k8s.aws/instance-memory',
               operator: 'Gt',
-              values: [`${16 * 1024 - 1}`],
+              values: [`${4 * 1024 - 1}`],
             },
             {
               key: 'kubernetes.io/os',
@@ -2598,7 +2598,7 @@ const velero = new k8s.helm.v3.Release(
   {
     name: 'velero',
     chart: 'velero',
-    version: '7.1.5',
+    version: '7.2.2',
     namespace: veleroNamespace.metadata.name,
     repositoryOpts: {
       repo: 'https://vmware-tanzu.github.io/helm-charts',
