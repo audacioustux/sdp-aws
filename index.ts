@@ -335,7 +335,7 @@ const cilium = new k8s.helm.v3.Release(
     name: 'cilium',
     chart: 'cilium',
     namespace: 'kube-system',
-    version: '1.16.2',
+    version: '1.16.4',
     repositoryOpts: {
       repo: 'https://helm.cilium.io',
     },
@@ -353,6 +353,7 @@ const cilium = new k8s.helm.v3.Release(
         enabled: true,
         bbr: true,
       },
+      enableK8sEndpointSlice: false,
       ingressController: {
         enabled: true,
         loadbalancerMode: 'shared',
