@@ -320,7 +320,7 @@ new k8s.core.v1.LimitRange(
 const gatewayAPI = new k8s.yaml.ConfigFile(
   nm('gateway-api'),
   {
-    file: 'https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.1.0/standard-install.yaml',
+    file: 'https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.1/standard-install.yaml',
   },
   { provider },
 )
@@ -353,7 +353,7 @@ const cilium = new k8s.helm.v3.Release(
         enabled: true,
         bbr: true,
       },
-      enableK8sEndpointSlice: false,
+      enableK8sTerminatingEndpoint: false,
       ingressController: {
         enabled: true,
         loadbalancerMode: 'shared',
@@ -380,9 +380,9 @@ const cilium = new k8s.helm.v3.Release(
           },
         },
       },
-      // gatewayAPI: {
-      //   enabled: true,
-      // },
+      gatewayAPI: {
+        enabled: true,
+      },
       hubble: {
         relay: {
           rollOutPods: true,
