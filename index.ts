@@ -223,25 +223,33 @@ const {
 
 // === EKS === Node Group ===
 
-const spotNodeGroupName = nm('spot-node-group')
-const spotNodeGroup = new eks.ManagedNodeGroup(spotNodeGroupName, {
-  cluster,
-  nodeGroupName: spotNodeGroupName,
+const nodeGroupConfig = {
   nodeRole: cluster.instanceRoles[0],
   subnetIds: privateSubnets.map((s) => s.id),
-  capacityType: 'SPOT',
-  // capacityType: 'ON_DEMAND',
   // TODO: switch to Bottlerocket
   // NOTE: https://github.com/pulumi/pulumi-eks/issues/1179
   // NOTE: https://github.com/bottlerocket-os/bottlerocket/issues/1721
   // NOTE: https://github.com/cilium/cilium/issues/32616#issuecomment-2126367506
   // amiType: 'BOTTLEROCKET_ARM_64',
+  // operatingSystem: eks.OperatingSystem.AL2023,
   // kubeletExtraArgs: '--max-pods=150 --max-pods-per-core=40',
   // bootstrapExtraArgs: '--use-max-pods false',
   amiType: 'AL2023_ARM_64_STANDARD',
+}
+
+const clusterOIDCProvider = cluster.oidcProvider!.apply((oidcProvider) => {
+  if (!oidcProvider) throw new Error('OIDC provider is undefined')
+  return oidcProvider
+})
+
+const spotNodeGroupName = nm('spot-node-group')
+const spotNodeGroup = new eks.ManagedNodeGroup(spotNodeGroupName, {
+  cluster,
+  ...nodeGroupConfig,
+  nodeGroupName: spotNodeGroupName,
+  capacityType: 'SPOT',
   // NOTE: large node size so the Pod limit is less likely to be reached
   // NOTE: t4g instances has larger Pod limit
-  // instanceTypes: ['t4g.xlarge', 'm7g.xlarge', 'm7gd.xlarge', 'm6g.xlarge', 'm6gd.xlarge'],
   instanceTypes: ['t4g.large'],
   scalingConfig: {
     minSize: 1,
@@ -264,11 +272,9 @@ const spotNodeGroup = new eks.ManagedNodeGroup(spotNodeGroupName, {
 const onDemandNodeGroupName = nm('on-demand-node-group')
 const onDemandNodeGroup = new eks.ManagedNodeGroup(onDemandNodeGroupName, {
   cluster,
+  ...nodeGroupConfig,
   nodeGroupName: onDemandNodeGroupName,
-  nodeRole: cluster.instanceRoles[0],
-  subnetIds: privateSubnets.map((s) => s.id),
   capacityType: 'ON_DEMAND',
-  amiType: 'AL2023_ARM_64_STANDARD',
   instanceTypes: ['t4g.large', 'm7g.large', 'm7gd.large', 'm6g.large', 'm6gd.large'],
   scalingConfig: {
     minSize: 1,
@@ -468,10 +474,8 @@ new aws.eks.Addon(nm('pod-identity-agent'), {
 
 const ebsCsiDriverRoleName = nm('ebs-csi-driver-irsa')
 const ebsCsiDriverRole = new aws.iam.Role(ebsCsiDriverRoleName, {
-  assumeRolePolicy: pulumi.all([cluster.oidcProvider?.url, cluster.oidcProvider?.arn]).apply(([url, arn]) => {
-    if (!url || !arn) throw new Error('OIDC provider URL or ARN is undefined')
-
-    return aws.iam.getPolicyDocumentOutput({
+  assumeRolePolicy: pulumi.all([clusterOIDCProvider.url, clusterOIDCProvider.arn]).apply(([url, arn]) =>
+    aws.iam.getPolicyDocumentOutput({
       statements: [
         {
           effect: 'Allow',
@@ -496,8 +500,8 @@ const ebsCsiDriverRole = new aws.iam.Role(ebsCsiDriverRoleName, {
           ],
         },
       ],
-    })
-  }).json,
+    }),
+  ).json,
 })
 new aws.iam.RolePolicyAttachment(`${ebsCsiDriverRoleName}-attachment`, {
   role: ebsCsiDriverRole,
@@ -544,10 +548,8 @@ new k8s.storage.v1.StorageClass(
 
 const efsCsiDriverRoleName = nm('efs-csi-driver-irsa')
 const efsCsiDriverRole = new aws.iam.Role(efsCsiDriverRoleName, {
-  assumeRolePolicy: pulumi.all([cluster.oidcProvider?.url, cluster.oidcProvider?.arn]).apply(([url, arn]) => {
-    if (!url || !arn) throw new Error('OIDC provider URL or ARN is undefined')
-
-    return aws.iam.getPolicyDocumentOutput({
+  assumeRolePolicy: pulumi.all([clusterOIDCProvider.url, clusterOIDCProvider.arn]).apply(([url, arn]) =>
+    aws.iam.getPolicyDocumentOutput({
       statements: [
         {
           effect: 'Allow',
@@ -572,8 +574,8 @@ const efsCsiDriverRole = new aws.iam.Role(efsCsiDriverRoleName, {
           ],
         },
       ],
-    })
-  }).json,
+    }),
+  ).json,
 })
 new aws.iam.RolePolicyAttachment(`${efsCsiDriverRoleName}-attachment`, {
   role: efsCsiDriverRole,
@@ -598,10 +600,8 @@ new aws.eks.Addon(nm('efs-csi-driver'), {
 
 const s3MountpointDriverRoleName = nm('s3-mountpoint-driver-irsa')
 const s3MountpointDriverRole = new aws.iam.Role(s3MountpointDriverRoleName, {
-  assumeRolePolicy: pulumi.all([cluster.oidcProvider?.url, cluster.oidcProvider?.arn]).apply(([url, arn]) => {
-    if (!url || !arn) throw new Error('OIDC provider URL or ARN is undefined')
-
-    return aws.iam.getPolicyDocumentOutput({
+  assumeRolePolicy: pulumi.all([clusterOIDCProvider.url, clusterOIDCProvider.arn]).apply(([url, arn]) =>
+    aws.iam.getPolicyDocumentOutput({
       statements: [
         {
           effect: 'Allow',
@@ -626,8 +626,8 @@ const s3MountpointDriverRole = new aws.iam.Role(s3MountpointDriverRoleName, {
           ],
         },
       ],
-    })
-  }).json,
+    }),
+  ).json,
 })
 new aws.iam.RolePolicyAttachment(`${s3MountpointDriverRoleName}-attachment`, {
   role: s3MountpointDriverRole,
@@ -1076,7 +1076,7 @@ const karpenterCRD = new k8s.helm.v3.Release(
     name: 'karpenter-crd',
     chart: 'oci://public.ecr.aws/karpenter/karpenter-crd',
     namespace: 'kube-system',
-    version: '1.0.4',
+    version: '1.1.1',
     maxHistory: 1,
   },
   { provider },
@@ -1872,7 +1872,7 @@ const certManager = new k8s.helm.v3.Release(
     name: 'cert-manager',
     chart: 'cert-manager',
     namespace: 'cert-manager',
-    version: 'v1.15.1',
+    version: 'v1.16.2',
     repositoryOpts: {
       repo: 'https://charts.jetstack.io',
     },
