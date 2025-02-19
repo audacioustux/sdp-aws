@@ -205,7 +205,7 @@ const {
   provider,
 } = new eks.Cluster(eksClusterName, {
   name: eksClusterName,
-  version: '1.30',
+  version: '1.31',
   vpcId: vpc.id,
   createOidcProvider: true,
   publicSubnetIds: publicSubnets.map((s) => s.id),
@@ -248,8 +248,7 @@ const spotNodeGroup = new eks.ManagedNodeGroup(spotNodeGroupName, {
   ...nodeGroupConfig,
   nodeGroupName: spotNodeGroupName,
   capacityType: 'SPOT',
-  // NOTE: large node size so the Pod limit is less likely to be reached
-  // NOTE: t4g instances has larger Pod limit
+  // NOTE: t4g instances has larger Pod limit than non-burstable instances
   instanceTypes: ['t4g.large'],
   scalingConfig: {
     minSize: 1,
@@ -275,7 +274,8 @@ const onDemandNodeGroup = new eks.ManagedNodeGroup(onDemandNodeGroupName, {
   ...nodeGroupConfig,
   nodeGroupName: onDemandNodeGroupName,
   capacityType: 'ON_DEMAND',
-  instanceTypes: ['t4g.large', 'm7g.large', 'm7gd.large', 'm6g.large', 'm6gd.large'],
+  // instanceTypes: ['t4g.large', 'm7g.large', 'm7gd.large', 'm6g.large', 'm6gd.large'],
+  instanceTypes: ['t4g.large'],
   scalingConfig: {
     minSize: 1,
     maxSize: 1,
@@ -341,7 +341,7 @@ const cilium = new k8s.helm.v3.Release(
     name: 'cilium',
     chart: 'cilium',
     namespace: 'kube-system',
-    version: '1.16.4',
+    version: '1.17.1',
     repositoryOpts: {
       repo: 'https://helm.cilium.io',
     },
@@ -355,11 +355,6 @@ const cilium = new k8s.helm.v3.Release(
       },
       k8sServiceHost: cluster.endpoint.apply((endpoint) => endpoint.replace('https://', '')),
       k8sServicePort: 443,
-      bandwidthManager: {
-        enabled: true,
-        bbr: true,
-      },
-      enableK8sTerminatingEndpoint: false,
       ingressController: {
         enabled: true,
         loadbalancerMode: 'shared',
@@ -374,7 +369,7 @@ const cilium = new k8s.helm.v3.Release(
             'service.beta.kubernetes.io/aws-load-balancer-target-group-attributes': Object.entries({
               'preserve_client_ip.enabled': 'true',
               'proxy_protocol_v2.enabled': 'true',
-              'deregistration_delay.timeout_seconds': '10',
+              'deregistration_delay.timeout_seconds': '15',
             })
               .map(([k, v]) => `${k}=${v}`)
               .join(','),
@@ -388,16 +383,7 @@ const cilium = new k8s.helm.v3.Release(
       },
       gatewayAPI: {
         enabled: true,
-      },
-      hubble: {
-        relay: {
-          rollOutPods: true,
-          enabled: true,
-        },
-        ui: {
-          rollOutPods: true,
-          enabled: true,
-        },
+        enableProxyProtocol: true,
       },
       operator: {
         rollOutPods: true,
@@ -413,10 +399,6 @@ const cilium = new k8s.helm.v3.Release(
         rollOutPods: true,
       },
       routingMode: 'native',
-      // egressMasqueradeInterfaces: 'eth0',
-      // bpf: {
-      //   masquerade: true,
-      // },
       ipam: {
         mode: 'eni',
       },
@@ -596,57 +578,57 @@ new aws.eks.Addon(nm('efs-csi-driver'), {
   resolveConflictsOnUpdate: 'OVERWRITE',
 })
 
-// === EKS === Addons === S3 Mountpoint Driver ===
+// // === EKS === Addons === S3 Mountpoint Driver ===
 
-const s3MountpointDriverRoleName = nm('s3-mountpoint-driver-irsa')
-const s3MountpointDriverRole = new aws.iam.Role(s3MountpointDriverRoleName, {
-  assumeRolePolicy: pulumi.all([clusterOIDCProvider.url, clusterOIDCProvider.arn]).apply(([url, arn]) =>
-    aws.iam.getPolicyDocumentOutput({
-      statements: [
-        {
-          effect: 'Allow',
-          actions: ['sts:AssumeRoleWithWebIdentity'],
-          principals: [
-            {
-              type: 'Federated',
-              identifiers: [arn],
-            },
-          ],
-          conditions: [
-            {
-              test: 'StringEquals',
-              variable: `${url.replace('https://', '')}:sub`,
-              values: ['system:serviceaccount:kube-system:s3-csi-driver-sa'],
-            },
-            {
-              test: 'StringEquals',
-              variable: `${url.replace('https://', '')}:aud`,
-              values: ['sts.amazonaws.com'],
-            },
-          ],
-        },
-      ],
-    }),
-  ).json,
-})
-new aws.iam.RolePolicyAttachment(`${s3MountpointDriverRoleName}-attachment`, {
-  role: s3MountpointDriverRole,
-  policyArn: aws.iam.ManagedPolicies.AmazonS3FullAccess,
-})
-new aws.eks.Addon(nm('s3-mountpoint-driver'), {
-  addonName: 'aws-mountpoint-s3-csi-driver',
-  clusterName: eksCluster.name,
-  addonVersion: eksCluster.version.apply(
-    async (kubernetesVersion) =>
-      await aws.eks.getAddonVersion({
-        addonName: 'aws-mountpoint-s3-csi-driver',
-        kubernetesVersion,
-        mostRecent: true,
-      }),
-  ).version,
-  serviceAccountRoleArn: s3MountpointDriverRole.arn,
-  resolveConflictsOnUpdate: 'OVERWRITE',
-})
+// const s3MountpointDriverRoleName = nm('s3-mountpoint-driver-irsa')
+// const s3MountpointDriverRole = new aws.iam.Role(s3MountpointDriverRoleName, {
+//   assumeRolePolicy: pulumi.all([clusterOIDCProvider.url, clusterOIDCProvider.arn]).apply(([url, arn]) =>
+//     aws.iam.getPolicyDocumentOutput({
+//       statements: [
+//         {
+//           effect: 'Allow',
+//           actions: ['sts:AssumeRoleWithWebIdentity'],
+//           principals: [
+//             {
+//               type: 'Federated',
+//               identifiers: [arn],
+//             },
+//           ],
+//           conditions: [
+//             {
+//               test: 'StringEquals',
+//               variable: `${url.replace('https://', '')}:sub`,
+//               values: ['system:serviceaccount:kube-system:s3-csi-driver-sa'],
+//             },
+//             {
+//               test: 'StringEquals',
+//               variable: `${url.replace('https://', '')}:aud`,
+//               values: ['sts.amazonaws.com'],
+//             },
+//           ],
+//         },
+//       ],
+//     }),
+//   ).json,
+// })
+// new aws.iam.RolePolicyAttachment(`${s3MountpointDriverRoleName}-attachment`, {
+//   role: s3MountpointDriverRole,
+//   policyArn: aws.iam.ManagedPolicies.AmazonS3FullAccess,
+// })
+// new aws.eks.Addon(nm('s3-mountpoint-driver'), {
+//   addonName: 'aws-mountpoint-s3-csi-driver',
+//   clusterName: eksCluster.name,
+//   addonVersion: eksCluster.version.apply(
+//     async (kubernetesVersion) =>
+//       await aws.eks.getAddonVersion({
+//         addonName: 'aws-mountpoint-s3-csi-driver',
+//         kubernetesVersion,
+//         mostRecent: true,
+//       }),
+//   ).version,
+//   serviceAccountRoleArn: s3MountpointDriverRole.arn,
+//   resolveConflictsOnUpdate: 'OVERWRITE',
+// })
 
 // === EKS === Addons === Snapshot Controller ===
 
@@ -1076,7 +1058,7 @@ const karpenterCRD = new k8s.helm.v3.Release(
     name: 'karpenter-crd',
     chart: 'oci://public.ecr.aws/karpenter/karpenter-crd',
     namespace: 'kube-system',
-    version: '1.1.1',
+    version: '1.2.1',
     maxHistory: 1,
   },
   { provider },
@@ -1169,7 +1151,7 @@ new k8s.apiextensions.CustomResource(
               effect: 'NoExecute',
             },
           ],
-          expireAfter: `${24 * 7}h`,
+          expireAfter: `${24 * 14}h`,
           terminationGracePeriod: '24h',
           requirements: [
             {
@@ -1214,8 +1196,8 @@ new k8s.apiextensions.CustomResource(
         },
       },
       limits: {
-        cpu: '16',
-        memory: '64Gi',
+        cpu: '24',
+        memory: '72Gi',
       },
       disruption: {
         consolidationPolicy: 'WhenEmptyOrUnderutilized',
@@ -1609,7 +1591,7 @@ new k8s.apiextensions.CustomResource(
                   spec: {
                     '+(topologySpreadConstraints)': [
                       {
-                        maxSkew: 2,
+                        maxSkew: 1,
                         topologyKey: 'kubernetes.io/hostname',
                         whenUnsatisfiable: 'DoNotSchedule',
                         labelSelector: '{{request.object.spec.selector}}',
@@ -1618,14 +1600,14 @@ new k8s.apiextensions.CustomResource(
                       {
                         maxSkew: 2,
                         topologyKey: 'topology.kubernetes.io/zone',
-                        whenUnsatisfiable: 'DoNotSchedule',
+                        whenUnsatisfiable: 'ScheduleAnyway',
                         labelSelector: '{{request.object.spec.selector}}',
                         matchLabelKeys: ['pod-template-hash', 'controller-revision-hash'],
                       },
                       {
                         maxSkew: 1,
                         topologyKey: 'node.sdp.aws/capacity-partition',
-                        whenUnsatisfiable: 'DoNotSchedule',
+                        whenUnsatisfiable: 'ScheduleAnyway',
                         labelSelector: '{{request.object.spec.selector}}',
                         matchLabelKeys: ['pod-template-hash', 'controller-revision-hash'],
                       },
@@ -2599,7 +2581,7 @@ const velero = new k8s.helm.v3.Release(
   {
     name: 'velero',
     chart: 'velero',
-    version: '7.2.2',
+    version: '8.4.0',
     namespace: veleroNamespace.metadata.name,
     repositoryOpts: {
       repo: 'https://vmware-tanzu.github.io/helm-charts',
@@ -2632,7 +2614,7 @@ const velero = new k8s.helm.v3.Release(
       initContainers: [
         {
           name: 'velero-plugin-for-aws',
-          image: 'velero/velero-plugin-for-aws:v1.10.1',
+          image: 'velero/velero-plugin-for-aws:v1.11.1',
           volumeMounts: [
             {
               mountPath: '/target',
