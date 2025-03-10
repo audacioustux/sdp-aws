@@ -1351,7 +1351,7 @@ const kyverno = new k8s.helm.v3.Release(
   {
     name: 'kyverno',
     chart: 'kyverno',
-    version: '3.2.6',
+    version: '3.3.6',
     namespace: kyvernoNamespace.metadata.name,
     repositoryOpts: {
       repo: 'https://kyverno.github.io/kyverno/',
@@ -1367,27 +1367,49 @@ const kyverno = new k8s.helm.v3.Release(
   { provider },
 )
 
-// new k8s.rbac.v1.ClusterRole(
-//   nm('kyverno-background-controller'),
-//   {
-//     metadata: {
-//       name: 'kyverno:update-apps',
-//       labels: {
-//         'app.kubernetes.io/component': 'background-controller',
-//         'app.kubernetes.io/instance': 'kyverno',
-//         'app.kubernetes.io/part-of': 'kyverno',
-//       },
-//     },
-//     rules: [
-//       {
-//         apiGroups: ['apps'],
-//         resources: ['deployments', 'statefulsets'],
-//         verbs: ['update'],
-//       },
-//     ],
-//   },
-//   { provider },
-// )
+const kyvernoRbacRules = [
+  {
+    apiGroups: ['keda.sh'],
+    resources: ['scaledobjects'],
+    verbs: ['*'],
+  },
+  {
+    apiGroups: ['autoscaling.k8s.io'],
+    resources: ['verticalpodautoscalers'],
+    verbs: ['*'],
+  },
+  {
+    apiGroups: ['apps'],
+    resources: ['deployments', 'statefulsets'],
+    verbs: ['*'],
+  },
+]
+new k8s.rbac.v1.ClusterRole(
+  nm('kyverno-background-controller-rbac-extras'),
+  {
+    metadata: {
+      name: 'kyverno:background-controller-rbac-extras',
+      labels: {
+        'rbac.kyverno.io/aggregate-to-background-controller': 'true',
+      },
+    },
+    rules: kyvernoRbacRules,
+  },
+  { provider },
+)
+new k8s.rbac.v1.ClusterRole(
+  nm('kyverno-admission-controller-rbac-extras'),
+  {
+    metadata: {
+      name: 'kyverno:admission-controller-rbac-extras',
+      labels: {
+        'rbac.kyverno.io/aggregate-to-admission-controller': 'true',
+      },
+    },
+    rules: kyvernoRbacRules,
+  },
+  { provider },
+)
 
 // TODO: enable kyverno policies from https://github.com/kyverno/policies
 // TODO: use a directory of policies to apply with ArgoCD
@@ -1623,6 +1645,143 @@ new k8s.apiextensions.CustomResource(
   },
   { provider, dependsOn: [kyverno] },
 )
+
+// === EKS === Unset CPU Limits ===
+
+// const unsetCPULimits = 'unset-cpu-limits'
+// new k8s.apiextensions.CustomResource(
+//   nm(unsetCPULimits),
+//   {
+//     apiVersion: 'kyverno.io/v1',
+//     kind: 'ClusterPolicy',
+//     metadata: {
+//       name: unsetCPULimits,
+//       annotations: {
+//         'kyverno.io/kyverno-version': kyverno.version,
+//         'kyverno.io/kubernetes-version': eksCluster.version,
+//       },
+//     },
+//     spec: {
+//       rules: [
+//         {
+//           name: unsetCPULimits,
+//           match: {
+//             any: [
+//               {
+//                 resources: {
+//                   kinds: ['Deployment', 'StatefulSet'],
+//                 },
+//               },
+//             ],
+//           },
+//           mutate: {
+//             mutateExistingOnPolicyUpdate: true,
+//             targets: [
+//               {
+//                 apiVersion: 'apps/v1',
+//                 kind: '{{request.object.kind}}',
+//                 namespace: '{{request.object.metadata.namespace}}',
+//               },
+//             ],
+//             foreach: [
+//               {
+//                 list: 'request.object.spec.template.spec.[containers, initContainers, ephemeralContainers][]',
+//                 patchStrategicMerge: {
+//                   spec: {
+//                     template: {
+//                       spec: {
+//                         containers: [
+//                           {
+//                             '(name)': '{{ element.name }}',
+//                             resources: {
+//                               limits: {
+//                                 $patch: 'replace',
+//                                 memory: '128Mi',
+//                               },
+//                               requests: {
+//                                 cpu: '50m',
+//                                 memory: '128Mi',
+//                               },
+//                             },
+//                           },
+//                         ],
+//                       },
+//                     },
+//                   },
+//                 },
+//               },
+//             ],
+//           },
+//         },
+//       ],
+//     },
+//   },
+//   { provider, dependsOn: [kyverno] },
+// )
+
+// === EKS === Vertical Pod Autoscaler ===
+
+// const vpaForAll = 'vpa-for-all'
+// new k8s.apiextensions.CustomResource(
+//   nm(vpaForAll),
+//   {
+//     apiVersion: 'kyverno.io/v1',
+//     kind: 'ClusterPolicy',
+//     metadata: {
+//       name: vpaForAll,
+//       annotations: {
+//         'kyverno.io/kyverno-version': kyverno.version,
+//         'kyverno.io/kubernetes-version': eksCluster.version,
+//       },
+//     },
+//     spec: {
+//       generateExisting: true,
+//       useServerSideApply: true,
+//       rules: [
+//         {
+//           name: vpaForAll,
+//           match: {
+//             resources: {
+//               kinds: ['Deployment', 'StatefulSet'],
+//             },
+//           },
+//           generate: {
+//             apiVersion: 'autoscaling.k8s.io/v1',
+//             kind: 'VerticalPodAutoscaler',
+//             name: '{{request.object.metadata.name}}',
+//             namespace: '{{request.object.metadata.namespace}}',
+//             synchronize: true,
+//             data: {
+//               spec: {
+//                 targetRef: {
+//                   apiVersion: 'apps/v1',
+//                   kind: '{{request.object.kind}}',
+//                   name: '{{request.object.metadata.name}}',
+//                 },
+//                 updatePolicy: {
+//                   updateMode: 'Auto',
+//                   minReplicas: 1,
+//                 },
+//                 resourcePolicy: {
+//                   containerPolicies: [
+//                     {
+//                       containerName: '*',
+//                       maxAllowed: {
+//                         cpu: '2',
+//                         memory: '4Gi',
+//                       },
+//                     },
+//                   ],
+//                 },
+//               },
+//             },
+//           },
+//         },
+//       ],
+//     },
+//   },
+//   { provider, dependsOn: [kyverno] },
+// )
 
 // === EKS === Priority Class ===
 
@@ -2649,50 +2808,50 @@ const keda = new k8s.helm.v3.Release(
 
 // === EKS === Argo Workflow ===
 
-const argoNamespace = new k8s.core.v1.Namespace(nm('argo'), { metadata: { name: 'argo' } }, { provider })
-const argo = new k8s.helm.v3.Release(
-  nm('argo'),
-  {
-    name: 'argo',
-    chart: 'argo-workflows',
-    version: '0.42.1',
-    namespace: argoNamespace.metadata.name,
-    repositoryOpts: {
-      repo: 'https://argoproj.github.io/argo-helm',
-    },
-    maxHistory: 1,
-    values: {
-      server: {
-        ingress: {
-          enabled: true,
-          annotations: {
-            'cert-manager.io/cluster-issuer': 'letsencrypt-prod-issuer',
-          },
-          hosts: [config.argoWorkflows.host],
-          paths: ['/'],
-          pathType: 'Prefix',
-          tls: [
-            {
-              secretName: 'argo-workflows-tls',
-              hosts: [config.argoWorkflows.host],
-            },
-          ],
-        },
-      },
-      workflow: {
-        serviceAccount: {
-          create: true,
-          name: 'argo-workflow',
-        },
-        rbac: {
-          create: true,
-        },
-      },
-      singleNamespace: true,
-    },
-  },
-  { provider },
-)
+// const argoNamespace = new k8s.core.v1.Namespace(nm('argo'), { metadata: { name: 'argo' } }, { provider })
+// const argo = new k8s.helm.v3.Release(
+//   nm('argo'),
+//   {
+//     name: 'argo',
+//     chart: 'argo-workflows',
+//     version: '0.42.1',
+//     namespace: argoNamespace.metadata.name,
+//     repositoryOpts: {
+//       repo: 'https://argoproj.github.io/argo-helm',
+//     },
+//     maxHistory: 1,
+//     values: {
+//       server: {
+//         ingress: {
+//           enabled: true,
+//           annotations: {
+//             'cert-manager.io/cluster-issuer': 'letsencrypt-prod-issuer',
+//           },
+//           hosts: [config.argoWorkflows.host],
+//           paths: ['/'],
+//           pathType: 'Prefix',
+//           tls: [
+//             {
+//               secretName: 'argo-workflows-tls',
+//               hosts: [config.argoWorkflows.host],
+//             },
+//           ],
+//         },
+//       },
+//       workflow: {
+//         serviceAccount: {
+//           create: true,
+//           name: 'argo-workflow',
+//         },
+//         rbac: {
+//           create: true,
+//         },
+//       },
+//       singleNamespace: true,
+//     },
+//   },
+//   { provider },
+// )
 
 // === EKS === ArgoCD ===
 
@@ -2882,7 +3041,7 @@ function registerHelmRelease(release: k8s.helm.v3.Release, project: string) {
   kyverno,
   velero,
   keda,
-  argo,
+  // argo,
   argocd,
   // TODO: configure argocd to play nicely with cilium
   // NOTE: https://docs.cilium.io/en/latest/configuration/argocd-issues/
