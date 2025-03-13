@@ -1301,12 +1301,9 @@ const vpa = new k8s.helm.v3.Release(
   nm('vertical-pod-autoscaler'),
   {
     name: 'vertical-pod-autoscaler',
-    chart: 'vertical-pod-autoscaler',
-    version: '9.9.0',
+    version: '~1.8.0',
+    chart: 'oci://ghcr.io/stevehipwell/helm-charts/vertical-pod-autoscaler',
     namespace: vpaNamespace.metadata.name,
-    repositoryOpts: {
-      repo: 'https://cowboysysop.github.io/charts/',
-    },
     maxHistory: 1,
   },
   { provider },
@@ -1648,140 +1645,140 @@ new k8s.apiextensions.CustomResource(
 
 // === EKS === Unset CPU Limits ===
 
-// const unsetCPULimits = 'unset-cpu-limits'
-// new k8s.apiextensions.CustomResource(
-//   nm(unsetCPULimits),
-//   {
-//     apiVersion: 'kyverno.io/v1',
-//     kind: 'ClusterPolicy',
-//     metadata: {
-//       name: unsetCPULimits,
-//       annotations: {
-//         'kyverno.io/kyverno-version': kyverno.version,
-//         'kyverno.io/kubernetes-version': eksCluster.version,
-//       },
-//     },
-//     spec: {
-//       rules: [
-//         {
-//           name: unsetCPULimits,
-//           match: {
-//             any: [
-//               {
-//                 resources: {
-//                   kinds: ['Deployment', 'StatefulSet'],
-//                 },
-//               },
-//             ],
-//           },
-//           mutate: {
-//             mutateExistingOnPolicyUpdate: true,
-//             targets: [
-//               {
-//                 apiVersion: 'apps/v1',
-//                 kind: '{{request.object.kind}}',
-//                 namespace: '{{request.object.metadata.namespace}}',
-//               },
-//             ],
-//             foreach: [
-//               {
-//                 list: 'request.object.spec.template.spec.[containers, initContainers, ephemeralContainers][]',
-//                 patchStrategicMerge: {
-//                   spec: {
-//                     template: {
-//                       spec: {
-//                         containers: [
-//                           {
-//                             '(name)': '{{ element.name }}',
-//                             resources: {
-//                               limits: {
-//                                 $patch: 'replace',
-//                                 memory: '128Mi',
-//                               },
-//                               requests: {
-//                                 cpu: '50m',
-//                                 memory: '128Mi',
-//                               },
-//                             },
-//                           },
-//                         ],
-//                       },
-//                     },
-//                   },
-//                 },
-//               },
-//             ],
-//           },
-//         },
-//       ],
-//     },
-//   },
-//   { provider, dependsOn: [kyverno] },
-// )
+const unsetCPULimits = 'unset-cpu-limits'
+new k8s.apiextensions.CustomResource(
+  nm(unsetCPULimits),
+  {
+    apiVersion: 'kyverno.io/v1',
+    kind: 'ClusterPolicy',
+    metadata: {
+      name: unsetCPULimits,
+      annotations: {
+        'kyverno.io/kyverno-version': kyverno.version,
+        'kyverno.io/kubernetes-version': eksCluster.version,
+      },
+    },
+    spec: {
+      rules: [
+        {
+          name: unsetCPULimits,
+          match: {
+            any: [
+              {
+                resources: {
+                  kinds: ['Deployment', 'StatefulSet'],
+                },
+              },
+            ],
+          },
+          mutate: {
+            mutateExistingOnPolicyUpdate: true,
+            targets: [
+              {
+                apiVersion: 'apps/v1',
+                kind: '{{request.object.kind}}',
+                namespace: '{{request.object.metadata.namespace}}',
+              },
+            ],
+            foreach: [
+              {
+                list: 'request.object.spec.template.spec.[containers, initContainers, ephemeralContainers][]',
+                patchStrategicMerge: {
+                  spec: {
+                    template: {
+                      spec: {
+                        containers: [
+                          {
+                            '(name)': '{{ element.name }}',
+                            resources: {
+                              limits: {
+                                $patch: 'replace',
+                                memory: '192Mi',
+                              },
+                              requests: {
+                                cpu: '20m',
+                                memory: '128Mi',
+                              },
+                            },
+                          },
+                        ],
+                      },
+                    },
+                  },
+                },
+              },
+            ],
+          },
+        },
+      ],
+    },
+  },
+  { provider, dependsOn: [kyverno] },
+)
 
 // === EKS === Vertical Pod Autoscaler ===
 
-// const vpaForAll = 'vpa-for-all'
-// new k8s.apiextensions.CustomResource(
-//   nm(vpaForAll),
-//   {
-//     apiVersion: 'kyverno.io/v1',
-//     kind: 'ClusterPolicy',
-//     metadata: {
-//       name: vpaForAll,
-//       annotations: {
-//         'kyverno.io/kyverno-version': kyverno.version,
-//         'kyverno.io/kubernetes-version': eksCluster.version,
-//       },
-//     },
-//     spec: {
-//       generateExisting: true,
-//       useServerSideApply: true,
-//       rules: [
-//         {
-//           name: vpaForAll,
-//           match: {
-//             resources: {
-//               kinds: ['Deployment', 'StatefulSet'],
-//             },
-//           },
-//           generate: {
-//             apiVersion: 'autoscaling.k8s.io/v1',
-//             kind: 'VerticalPodAutoscaler',
-//             name: '{{request.object.metadata.name}}',
-//             namespace: '{{request.object.metadata.namespace}}',
-//             synchronize: true,
-//             data: {
-//               spec: {
-//                 targetRef: {
-//                   apiVersion: 'apps/v1',
-//                   kind: '{{request.object.kind}}',
-//                   name: '{{request.object.metadata.name}}',
-//                 },
-//                 updatePolicy: {
-//                   updateMode: 'Auto',
-//                   minReplicas: 1,
-//                 },
-//                 resourcePolicy: {
-//                   containerPolicies: [
-//                     {
-//                       containerName: '*',
-//                       maxAllowed: {
-//                         cpu: '2',
-//                         memory: '4Gi',
-//                       },
-//                     },
-//                   ],
-//                 },
-//               },
-//             },
-//           },
-//         },
-//       ],
-//     },
-//   },
-//   { provider, dependsOn: [kyverno] },
-// )
+const vpaForAll = 'vpa-for-all'
+new k8s.apiextensions.CustomResource(
+  nm(vpaForAll),
+  {
+    apiVersion: 'kyverno.io/v1',
+    kind: 'ClusterPolicy',
+    metadata: {
+      name: vpaForAll,
+      annotations: {
+        'kyverno.io/kyverno-version': kyverno.version,
+        'kyverno.io/kubernetes-version': eksCluster.version,
+      },
+    },
+    spec: {
+      generateExisting: true,
+      useServerSideApply: true,
+      rules: [
+        {
+          name: vpaForAll,
+          match: {
+            resources: {
+              kinds: ['Deployment', 'StatefulSet'],
+            },
+          },
+          generate: {
+            apiVersion: 'autoscaling.k8s.io/v1',
+            kind: 'VerticalPodAutoscaler',
+            name: '{{request.object.metadata.name}}',
+            namespace: '{{request.object.metadata.namespace}}',
+            synchronize: true,
+            data: {
+              spec: {
+                targetRef: {
+                  apiVersion: 'apps/v1',
+                  kind: '{{request.object.kind}}',
+                  name: '{{request.object.metadata.name}}',
+                },
+                updatePolicy: {
+                  updateMode: 'Auto',
+                  minReplicas: 1,
+                },
+                resourcePolicy: {
+                  containerPolicies: [
+                    {
+                      containerName: '*',
+                      maxAllowed: {
+                        cpu: '2',
+                        memory: '4Gi',
+                      },
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        },
+      ],
+    },
+  },
+  { provider, dependsOn: [kyverno] },
+)
 
 // === EKS === Priority Class ===
 
@@ -2309,153 +2306,144 @@ const grafanaPassword = new random.RandomPassword(nm('grafana-password'), {
   length: 32,
   special: true,
 })
-const kubePrometheusStack = new k8s.helm.v3.Release(
-  nm('kube-prometheus-stack'),
-  {
-    name: 'kube-prometheus-stack',
-    chart: 'kube-prometheus-stack',
-    version: '62.3.1',
-    namespace: monitoringNamespace.metadata.name,
-    repositoryOpts: {
-      repo: 'https://prometheus-community.github.io/helm-charts',
-    },
-    maxHistory: 1,
-    values: {
-      prometheus: {
-        prometheusSpec: {
-          serviceMonitorSelectorNilUsesHelmValues: false,
-          podMonitorSelectorNilUsesHelmValues: false,
-          ruleSelectorNilUsesHelmValues: false,
-          probeSelectorNilUsesHelmValues: false,
-          resources: {
-            requests: {
-              cpu: '200m',
-              memory: '2Gi',
-            },
-            limits: {
-              memory: '4Gi',
-            },
-          },
-          retention: '7d',
-          retentionSize: '10GiB',
-          storageSpec: {
-            volumeClaimTemplate: {
-              metadata: {
-                name: 'prometheus-storage',
-              },
-              spec: {
-                accessModes: ['ReadWriteOnce'],
-                resources: {
-                  requests: {
-                    storage: '12Gi',
-                  },
-                },
-              },
-            },
-          },
-          thanos: {
-            objectStorageConfig: {
-              secret: {
-                type: 'S3',
-                config: {
-                  bucket: thanosBucket.bucket,
-                  endpoint: 's3.amazonaws.com',
-                  region: regionId,
-                  access_key: thanosAccessKey.id,
-                  secret_key: thanosAccessKey.secret,
-                },
-              },
-            },
-          },
-        },
-        thanosService: {
-          enabled: true,
-        },
-        thanosServiceMonitor: {
-          enabled: true,
-        },
-      },
-      prometheusOperator: {
-        admissionWebhooks: {
-          certManager: {
-            enabled: true,
-          },
-        },
-      },
-      alertmanager: {
-        alertmanagerSpec: {
-          storage: {
-            volumeClaimTemplate: {
-              spec: {
-                accessModes: ['ReadWriteOnce'],
-                resources: {
-                  requests: {
-                    storage: '1Gi',
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-      grafana: {
-        persistence: {
-          enabled: true,
-        },
-        adminPassword: grafanaPassword.result,
-        'grafana.ini': {
-          users: {
-            viewers_can_edit: true,
-          },
-        },
-        ingress: {
-          enabled: true,
-          hosts: [config.grafana.host],
-          annotations: {
-            'cert-manager.io/cluster-issuer': 'letsencrypt-prod-issuer',
-          },
-          tls: [
-            {
-              secretName: 'grafana-tls',
-              hosts: [config.grafana.host],
-            },
-          ],
-        },
-        defaultDashboardsEditable: false,
-        dashboardProviders: {
-          'dashboardproviders.yaml': {
-            apiVersion: 1,
-            providers: [
-              {
-                name: 'karperter',
-                orgId: 1,
-                folder: 'karpenter',
-                type: 'file',
-                disableDeletion: true,
-                editable: true,
-                options: {
-                  path: '/var/lib/grafana/dashboards/karpenter',
-                },
-              },
-            ],
-          },
-        },
-        dashboards: {
-          karpenter: {
-            // TODO: move the dashboard to a local file, as the content may change
-            'karperter-capacity': {
-              url: 'https://karpenter.sh/preview/getting-started/getting-started-with-karpenter/karpenter-capacity-dashboard.json',
-            },
-            'karperter-performance': {
-              url: 'https://karpenter.sh/preview/getting-started/getting-started-with-karpenter/karpenter-performance-dashboard.json',
-            },
-          },
-        },
-      },
-    },
-  },
-  { provider, dependsOn: [certManager] },
-)
+// const kubePrometheusStack = new k8s.helm.v3.Release(
+//   nm('kube-prometheus-stack'),
+//   {
+//     name: 'kube-prometheus-stack',
+//     chart: 'kube-prometheus-stack',
+//     version: '62.3.1',
+//     namespace: monitoringNamespace.metadata.name,
+//     repositoryOpts: {
+//       repo: 'https://prometheus-community.github.io/helm-charts',
+//     },
+//     maxHistory: 1,
+//     values: {
+//       prometheus: {
+//         prometheusSpec: {
+//           serviceMonitorSelectorNilUsesHelmValues: false,
+//           podMonitorSelectorNilUsesHelmValues: false,
+//           ruleSelectorNilUsesHelmValues: false,
+//           probeSelectorNilUsesHelmValues: false,
+//           retention: '7d',
+//           retentionSize: '10GiB',
+//           storageSpec: {
+//             volumeClaimTemplate: {
+//               metadata: {
+//                 name: 'prometheus-storage',
+//               },
+//               spec: {
+//                 accessModes: ['ReadWriteOnce'],
+//                 resources: {
+//                   requests: {
+//                     storage: '12Gi',
+//                   },
+//                 },
+//               },
+//             },
+//           },
+//           thanos: {
+//             objectStorageConfig: {
+//               secret: {
+//                 type: 'S3',
+//                 config: {
+//                   bucket: thanosBucket.bucket,
+//                   endpoint: 's3.amazonaws.com',
+//                   region: regionId,
+//                   access_key: thanosAccessKey.id,
+//                   secret_key: thanosAccessKey.secret,
+//                 },
+//               },
+//             },
+//           },
+//         },
+//         thanosService: {
+//           enabled: true,
+//         },
+//         thanosServiceMonitor: {
+//           enabled: true,
+//         },
+//       },
+//       prometheusOperator: {
+//         admissionWebhooks: {
+//           certManager: {
+//             enabled: true,
+//           },
+//         },
+//       },
+//       alertmanager: {
+//         alertmanagerSpec: {
+//           storage: {
+//             volumeClaimTemplate: {
+//               spec: {
+//                 accessModes: ['ReadWriteOnce'],
+//                 resources: {
+//                   requests: {
+//                     storage: '1Gi',
+//                   },
+//                 },
+//               },
+//             },
+//           },
+//         },
+//       },
+//       grafana: {
+//         persistence: {
+//           enabled: true,
+//         },
+//         adminPassword: grafanaPassword.result,
+//         'grafana.ini': {
+//           users: {
+//             viewers_can_edit: true,
+//           },
+//         },
+//         ingress: {
+//           enabled: true,
+//           hosts: [config.grafana.host],
+//           annotations: {
+//             'cert-manager.io/cluster-issuer': 'letsencrypt-prod-issuer',
+//           },
+//           tls: [
+//             {
+//               secretName: 'grafana-tls',
+//               hosts: [config.grafana.host],
+//             },
+//           ],
+//         },
+//         defaultDashboardsEditable: false,
+//         dashboardProviders: {
+//           'dashboardproviders.yaml': {
+//             apiVersion: 1,
+//             providers: [
+//               {
+//                 name: 'karperter',
+//                 orgId: 1,
+//                 folder: 'karpenter',
+//                 type: 'file',
+//                 disableDeletion: true,
+//                 editable: true,
+//                 options: {
+//                   path: '/var/lib/grafana/dashboards/karpenter',
+//                 },
+//               },
+//             ],
+//           },
+//         },
+//         dashboards: {
+//           karpenter: {
+//             // TODO: move the dashboard to a local file, as the content may change
+//             'karperter-capacity': {
+//               url: 'https://karpenter.sh/preview/getting-started/getting-started-with-karpenter/karpenter-capacity-dashboard.json',
+//             },
+//             'karperter-performance': {
+//               url: 'https://karpenter.sh/preview/getting-started/getting-started-with-karpenter/karpenter-performance-dashboard.json',
+//             },
+//           },
+//         },
+//       },
+//     },
+//   },
+//   { provider, dependsOn: [certManager] },
+// )
 
 // === EKS === Monitoring === Loki ===
 
@@ -2893,28 +2881,15 @@ const argocd = new k8s.helm.v3.Release(
         },
       },
       controller: {
-        resources: {
-          requests: {
-            cpu: '100m',
-            memory: '1Gi',
-          },
-          limits: {
-            memory: '4Gi',
-          },
-        },
         metrics: {
           enabled: true,
         },
       },
-      repoServer: {
-        resources: {
-          requests: {
-            memory: '256Mi',
-          },
-          limits: {
-            memory: '512Mi',
-          },
-        },
+      dex: {
+        enabled: false,
+      },
+      notifications: {
+        enabled: false,
       },
     },
   },
@@ -3007,7 +2982,7 @@ function registerHelmRelease(release: k8s.helm.v3.Release, project: string) {
           },
           syncPolicy: {
             automated: {
-              selfHeal: true,
+              // selfHeal: true,
               prune: true,
             },
             retry: {
@@ -3033,7 +3008,7 @@ function registerHelmRelease(release: k8s.helm.v3.Release, project: string) {
   certManager,
   awsLoadBalancerController,
   metricsServer,
-  kubePrometheusStack,
+  // kubePrometheusStack,
   // loki,
   // promtail,
   eso,
