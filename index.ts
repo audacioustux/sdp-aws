@@ -1201,7 +1201,7 @@ new k8s.apiextensions.CustomResource(
       },
       disruption: {
         consolidationPolicy: 'WhenEmptyOrUnderutilized',
-        consolidateAfter: '1m',
+        consolidateAfter: '10m',
       },
       weight: 100,
     },
@@ -1286,7 +1286,7 @@ new k8s.apiextensions.CustomResource(
       },
       disruption: {
         consolidationPolicy: 'WhenEmptyOrUnderutilized',
-        consolidateAfter: '1m',
+        consolidateAfter: '10m',
       },
       weight: 50,
     },
@@ -1301,7 +1301,7 @@ const vpa = new k8s.helm.v3.Release(
   nm('vertical-pod-autoscaler'),
   {
     name: 'vertical-pod-autoscaler',
-    version: '~1.8.0',
+    version: '1.9.1',
     chart: 'oci://ghcr.io/stevehipwell/helm-charts/vertical-pod-autoscaler',
     namespace: vpaNamespace.metadata.name,
     maxHistory: 1,
@@ -1645,76 +1645,76 @@ new k8s.apiextensions.CustomResource(
 
 // === EKS === Unset CPU Limits ===
 
-const unsetCPULimits = 'unset-cpu-limits'
-new k8s.apiextensions.CustomResource(
-  nm(unsetCPULimits),
-  {
-    apiVersion: 'kyverno.io/v1',
-    kind: 'ClusterPolicy',
-    metadata: {
-      name: unsetCPULimits,
-      annotations: {
-        'kyverno.io/kyverno-version': kyverno.version,
-        'kyverno.io/kubernetes-version': eksCluster.version,
-      },
-    },
-    spec: {
-      rules: [
-        {
-          name: unsetCPULimits,
-          match: {
-            any: [
-              {
-                resources: {
-                  kinds: ['Deployment', 'StatefulSet'],
-                },
-              },
-            ],
-          },
-          mutate: {
-            mutateExistingOnPolicyUpdate: true,
-            targets: [
-              {
-                apiVersion: 'apps/v1',
-                kind: '{{request.object.kind}}',
-                namespace: '{{request.object.metadata.namespace}}',
-              },
-            ],
-            foreach: [
-              {
-                list: 'request.object.spec.template.spec.[containers, initContainers, ephemeralContainers][]',
-                patchStrategicMerge: {
-                  spec: {
-                    template: {
-                      spec: {
-                        containers: [
-                          {
-                            '(name)': '{{ element.name }}',
-                            resources: {
-                              limits: {
-                                $patch: 'replace',
-                                memory: '192Mi',
-                              },
-                              requests: {
-                                cpu: '20m',
-                                memory: '128Mi',
-                              },
-                            },
-                          },
-                        ],
-                      },
-                    },
-                  },
-                },
-              },
-            ],
-          },
-        },
-      ],
-    },
-  },
-  { provider, dependsOn: [kyverno] },
-)
+// const unsetCPULimits = 'unset-cpu-limits'
+// new k8s.apiextensions.CustomResource(
+//   nm(unsetCPULimits),
+//   {
+//     apiVersion: 'kyverno.io/v1',
+//     kind: 'ClusterPolicy',
+//     metadata: {
+//       name: unsetCPULimits,
+//       annotations: {
+//         'kyverno.io/kyverno-version': kyverno.version,
+//         'kyverno.io/kubernetes-version': eksCluster.version,
+//       },
+//     },
+//     spec: {
+//       rules: [
+//         {
+//           name: unsetCPULimits,
+//           match: {
+//             any: [
+//               {
+//                 resources: {
+//                   kinds: ['Deployment', 'StatefulSet'],
+//                 },
+//               },
+//             ],
+//           },
+//           mutate: {
+//             mutateExistingOnPolicyUpdate: true,
+//             targets: [
+//               {
+//                 apiVersion: 'apps/v1',
+//                 kind: '{{request.object.kind}}',
+//                 namespace: '{{request.object.metadata.namespace}}',
+//               },
+//             ],
+//             foreach: [
+//               {
+//                 list: 'request.object.spec.template.spec.[containers, initContainers, ephemeralContainers][]',
+//                 patchStrategicMerge: {
+//                   spec: {
+//                     template: {
+//                       spec: {
+//                         containers: [
+//                           {
+//                             '(name)': '{{ element.name }}',
+//                             resources: {
+//                               limits: {
+//                                 $patch: 'replace',
+//                                 memory: '192Mi',
+//                               },
+//                               requests: {
+//                                 cpu: '20m',
+//                                 memory: '192Mi',
+//                               },
+//                             },
+//                           },
+//                         ],
+//                       },
+//                     },
+//                   },
+//                 },
+//               },
+//             ],
+//           },
+//         },
+//       ],
+//     },
+//   },
+//   { provider, dependsOn: [kyverno] },
+// )
 
 // === EKS === Vertical Pod Autoscaler ===
 
@@ -1742,6 +1742,11 @@ new k8s.apiextensions.CustomResource(
               kinds: ['Deployment', 'StatefulSet'],
             },
           },
+          exclude: {
+            resources: {
+              names: ['moodle'],
+            },
+          },
           generate: {
             apiVersion: 'autoscaling.k8s.io/v1',
             kind: 'VerticalPodAutoscaler',
@@ -1757,6 +1762,7 @@ new k8s.apiextensions.CustomResource(
                 },
                 updatePolicy: {
                   updateMode: 'Auto',
+                  // updateMode: 'Off',
                   minReplicas: 1,
                 },
                 resourcePolicy: {
@@ -2010,7 +2016,7 @@ const certManager = new k8s.helm.v3.Release(
     name: 'cert-manager',
     chart: 'cert-manager',
     namespace: 'cert-manager',
-    version: 'v1.16.2',
+    version: 'v1.18.0',
     repositoryOpts: {
       repo: 'https://charts.jetstack.io',
     },
@@ -2854,7 +2860,7 @@ const argocd = new k8s.helm.v3.Release(
     name: 'argocd',
     chart: 'argo-cd',
     namespace: argocdNamespace.metadata.name,
-    version: '7.6.8',
+    version: '8.1.0',
     maxHistory: 1,
     repositoryOpts: {
       repo: 'https://argoproj.github.io/argo-helm',
@@ -3017,7 +3023,7 @@ function registerHelmRelease(release: k8s.helm.v3.Release, project: string) {
   velero,
   keda,
   // argo,
-  argocd,
+  // argocd,
   // TODO: configure argocd to play nicely with cilium
   // NOTE: https://docs.cilium.io/en/latest/configuration/argocd-issues/
   cilium,
