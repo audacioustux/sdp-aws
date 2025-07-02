@@ -1058,7 +1058,7 @@ const karpenterCRD = new k8s.helm.v3.Release(
     name: 'karpenter-crd',
     chart: 'oci://public.ecr.aws/karpenter/karpenter-crd',
     namespace: 'kube-system',
-    version: '1.2.1',
+    version: '1.5.1',
     maxHistory: 1,
   },
   { provider },
@@ -1594,15 +1594,15 @@ new k8s.apiextensions.CustomResource(
               kinds: ['Deployment', 'StatefulSet'],
             },
           },
-          preconditions: {
-            all: [
-              {
-                key: '{{ request.object.spec.replicas }}',
-                operator: 'GreaterThanOrEquals',
-                value: 2,
-              },
-            ],
-          },
+          // preconditions: {
+          //   all: [
+          //     {
+          //       key: '{{ request.object.spec.replicas }}',
+          //       operator: 'GreaterThanOrEquals',
+          //       value: 2,
+          //     },
+          //   ],
+          // },
           mutate: {
             patchStrategicMerge: {
               spec: {
@@ -2860,7 +2860,7 @@ const argocd = new k8s.helm.v3.Release(
     name: 'argocd',
     chart: 'argo-cd',
     namespace: argocdNamespace.metadata.name,
-    version: '8.1.0',
+    version: '8.1.2',
     maxHistory: 1,
     repositoryOpts: {
       repo: 'https://argoproj.github.io/argo-helm',
@@ -2988,7 +2988,7 @@ function registerHelmRelease(release: k8s.helm.v3.Release, project: string) {
           },
           syncPolicy: {
             automated: {
-              // selfHeal: true,
+              selfHeal: true,
               prune: true,
             },
             retry: {
