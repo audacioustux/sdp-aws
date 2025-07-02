@@ -243,22 +243,22 @@ const clusterOIDCProvider = cluster.oidcProvider!.apply((oidcProvider) => {
 })
 
 const spotNodeGroupName = nm('spot-node-group')
-const spotNodeGroup = new eks.ManagedNodeGroup(spotNodeGroupName, {
+new eks.ManagedNodeGroup(spotNodeGroupName, {
   cluster,
   ...nodeGroupConfig,
   nodeGroupName: spotNodeGroupName,
   capacityType: 'SPOT',
   // NOTE: t4g instances has larger Pod limit than non-burstable instances
-  instanceTypes: ['t4g.large'],
+  instanceTypes: ['t4g.large', 't3.large'],
   scalingConfig: {
-    minSize: 1,
-    maxSize: 1,
-    desiredSize: 1,
+    minSize: 2,
+    maxSize: 2,
+    desiredSize: 2,
   },
-  labels: {
-    'node.sdp.aws/capacity-type': 'spot',
-    'node.sdp.aws/capacity-partition': 'spot-1',
-  },
+  // labels: {
+  //   'node.sdp.aws/capacity-type': 'spot',
+  //   'node.sdp.aws/capacity-partition': 'spot-1',
+  // },
   taints: [
     {
       key: 'node.cilium.io/agent-not-ready',
@@ -268,36 +268,36 @@ const spotNodeGroup = new eks.ManagedNodeGroup(spotNodeGroupName, {
   ],
 })
 
-const onDemandNodeGroupName = nm('on-demand-node-group')
-const onDemandNodeGroup = new eks.ManagedNodeGroup(onDemandNodeGroupName, {
-  cluster,
-  ...nodeGroupConfig,
-  nodeGroupName: onDemandNodeGroupName,
-  capacityType: 'ON_DEMAND',
-  // instanceTypes: ['t4g.large', 'm7g.large', 'm7gd.large', 'm6g.large', 'm6gd.large'],
-  instanceTypes: ['t4g.large'],
-  scalingConfig: {
-    minSize: 1,
-    maxSize: 1,
-    desiredSize: 1,
-  },
-  labels: {
-    'node.sdp.aws/capacity-type': 'on-demand',
-    'node.sdp.aws/capacity-partition': 'on-demand-1',
-  },
-  taints: [
-    {
-      key: 'node.cilium.io/agent-not-ready',
-      value: 'true',
-      effect: 'NO_EXECUTE',
-    },
-    {
-      key: 'node.sdp.aws/reserved',
-      value: 'dedicated',
-      effect: 'PREFER_NO_SCHEDULE',
-    },
-  ],
-})
+// const onDemandNodeGroupName = nm('on-demand-node-group')
+// const onDemandNodeGroup = new eks.ManagedNodeGroup(onDemandNodeGroupName, {
+//   cluster,
+//   ...nodeGroupConfig,
+//   nodeGroupName: onDemandNodeGroupName,
+//   capacityType: 'ON_DEMAND',
+//   // instanceTypes: ['t4g.large', 'm7g.large', 'm7gd.large', 'm6g.large', 'm6gd.large'],
+//   instanceTypes: ['t4g.large'],
+//   scalingConfig: {
+//     minSize: 1,
+//     maxSize: 1,
+//     desiredSize: 1,
+//   },
+//   labels: {
+//     'node.sdp.aws/capacity-type': 'on-demand',
+//     'node.sdp.aws/capacity-partition': 'on-demand-1',
+//   },
+//   taints: [
+//     {
+//       key: 'node.cilium.io/agent-not-ready',
+//       value: 'true',
+//       effect: 'NO_EXECUTE',
+//     },
+//     {
+//       key: 'node.sdp.aws/reserved',
+//       value: 'dedicated',
+//       effect: 'PREFER_NO_SCHEDULE',
+//     },
+//   ],
+// })
 
 // === EKS === Limit Range === Kube System ===
 
@@ -1089,7 +1089,7 @@ const karpenter = new k8s.helm.v3.Release(
   },
   {
     provider,
-    dependsOn: [spotNodeGroup, onDemandNodeGroup, karpenterCRD],
+    dependsOn: [karpenterCRD],
   },
 )
 
@@ -1151,19 +1151,19 @@ new k8s.apiextensions.CustomResource(
               effect: 'NoExecute',
             },
           ],
-          expireAfter: `${24 * 14}h`,
+          expireAfter: `${24 * 28}h`,
           terminationGracePeriod: '24h',
           requirements: [
-            {
-              key: 'node.sdp.aws/capacity-type',
-              operator: 'In',
-              values: ['spot'],
-            },
-            {
-              key: 'node.sdp.aws/capacity-partition',
-              operator: 'In',
-              values: ['spot-1'],
-            },
+            // {
+            //   key: 'node.sdp.aws/capacity-type',
+            //   operator: 'In',
+            //   values: ['spot'],
+            // },
+            // {
+            //   key: 'node.sdp.aws/capacity-partition',
+            //   operator: 'In',
+            //   values: ['spot-1'],
+            // },
             {
               key: 'kubernetes.io/arch',
               operator: 'In',
@@ -1172,11 +1172,11 @@ new k8s.apiextensions.CustomResource(
             // avoid allocating too many small instances
             // TODO: https://github.com/kubernetes-sigs/karpenter/issues/1664
             // TODO: https://github.com/kubernetes-sigs/karpenter/issues/919
-            {
-              key: 'karpenter.k8s.aws/instance-memory',
-              operator: 'Gt',
-              values: [`${4 * 1024 - 1}`],
-            },
+            // {
+            //   key: 'karpenter.k8s.aws/instance-memory',
+            //   operator: 'Gt',
+            //   values: [`${2 * 1024 - 1}`],
+            // },
             {
               key: 'kubernetes.io/os',
               operator: 'In',
@@ -1209,90 +1209,90 @@ new k8s.apiextensions.CustomResource(
   { provider, dependsOn: [defaultNodeClass] },
 )
 
-new k8s.apiextensions.CustomResource(
-  nm('on-demand-node-pool'),
-  {
-    apiVersion: 'karpenter.sh/v1',
-    kind: 'NodePool',
-    metadata: {
-      name: 'on-demand',
-    },
-    spec: {
-      template: {
-        spec: {
-          nodeClassRef: {
-            group: 'karpenter.k8s.aws',
-            kind: 'EC2NodeClass',
-            name: defaultNodeClass.metadata.name,
-          },
-          taints: [
-            {
-              key: 'node.sdp.aws/reserved',
-              value: 'dedicated',
-              effect: 'PreferNoSchedule',
-            },
-          ],
-          startupTaints: [
-            {
-              key: 'node.cilium.io/agent-not-ready',
-              value: 'true',
-              effect: 'NoExecute',
-            },
-          ],
-          expireAfter: `${24 * 30}h`,
-          terminationGracePeriod: '24h',
-          requirements: [
-            {
-              key: 'node.sdp.aws/capacity-type',
-              operator: 'In',
-              values: ['on-demand'],
-            },
-            {
-              key: 'node.sdp.aws/capacity-partition',
-              operator: 'In',
-              values: ['on-demand-1'],
-            },
-            {
-              key: 'kubernetes.io/arch',
-              operator: 'In',
-              values: ['arm64', 'amd64'],
-            },
-            {
-              key: 'karpenter.k8s.aws/instance-memory',
-              operator: 'Gt',
-              values: [`${4 * 1024 - 1}`],
-            },
-            {
-              key: 'kubernetes.io/os',
-              operator: 'In',
-              values: ['linux'],
-            },
-            {
-              key: 'karpenter.sh/capacity-type',
-              operator: 'In',
-              values: ['on-demand'],
-            },
-            {
-              key: 'karpenter.k8s.aws/instance-hypervisor',
-              operator: 'In',
-              values: ['nitro'],
-            },
-          ],
-        },
-      },
-      limits: {
-        cpu: '16',
-        memory: '64Gi',
-      },
-      disruption: {
-        consolidationPolicy: 'WhenEmptyOrUnderutilized',
-        consolidateAfter: '10m',
-      },
-      weight: 50,
-    },
-  },
-  { provider, dependsOn: [defaultNodeClass] },
-)
+// new k8s.apiextensions.CustomResource(
+//   nm('on-demand-node-pool'),
+//   {
+//     apiVersion: 'karpenter.sh/v1',
+//     kind: 'NodePool',
+//     metadata: {
+//       name: 'on-demand',
+//     },
+//     spec: {
+//       template: {
+//         spec: {
+//           nodeClassRef: {
+//             group: 'karpenter.k8s.aws',
+//             kind: 'EC2NodeClass',
+//             name: defaultNodeClass.metadata.name,
+//           },
+//           taints: [
+//             {
+//               key: 'node.sdp.aws/reserved',
+//               value: 'dedicated',
+//               effect: 'PreferNoSchedule',
+//             },
+//           ],
+//           startupTaints: [
+//             {
+//               key: 'node.cilium.io/agent-not-ready',
+//               value: 'true',
+//               effect: 'NoExecute',
+//             },
+//           ],
+//           expireAfter: `${24 * 30}h`,
+//           terminationGracePeriod: '24h',
+//           requirements: [
+//             {
+//               key: 'node.sdp.aws/capacity-type',
+//               operator: 'In',
+//               values: ['on-demand'],
+//             },
+//             {
+//               key: 'node.sdp.aws/capacity-partition',
+//               operator: 'In',
+//               values: ['on-demand-1'],
+//             },
+//             {
+//               key: 'kubernetes.io/arch',
+//               operator: 'In',
+//               values: ['arm64', 'amd64'],
+//             },
+//             {
+//               key: 'karpenter.k8s.aws/instance-memory',
+//               operator: 'Gt',
+//               values: [`${4 * 1024 - 1}`],
+//             },
+//             {
+//               key: 'kubernetes.io/os',
+//               operator: 'In',
+//               values: ['linux'],
+//             },
+//             {
+//               key: 'karpenter.sh/capacity-type',
+//               operator: 'In',
+//               values: ['on-demand'],
+//             },
+//             {
+//               key: 'karpenter.k8s.aws/instance-hypervisor',
+//               operator: 'In',
+//               values: ['nitro'],
+//             },
+//           ],
+//         },
+//       },
+//       limits: {
+//         cpu: '16',
+//         memory: '64Gi',
+//       },
+//       disruption: {
+//         consolidationPolicy: 'WhenEmptyOrUnderutilized',
+//         consolidateAfter: '10m',
+//       },
+//       weight: 50,
+//     },
+//   },
+//   { provider, dependsOn: [defaultNodeClass] },
+// )
 
 // === EKS === Vertical Pod Autoscaler ===
 
@@ -1305,6 +1305,11 @@ const vpa = new k8s.helm.v3.Release(
     chart: 'oci://ghcr.io/stevehipwell/helm-charts/vertical-pod-autoscaler',
     namespace: vpaNamespace.metadata.name,
     maxHistory: 1,
+    values: {
+      recommender: {
+        extraArgs: ['--oom-bump-up-ratio=2.0', '--oom-min-bump-up-bytes=524288000'],
+      },
+    },
   },
   { provider },
 )
@@ -1617,19 +1622,19 @@ new k8s.apiextensions.CustomResource(
                         matchLabelKeys: ['pod-template-hash', 'controller-revision-hash'],
                       },
                       {
-                        maxSkew: 2,
+                        maxSkew: 1,
                         topologyKey: 'topology.kubernetes.io/zone',
                         whenUnsatisfiable: 'ScheduleAnyway',
                         labelSelector: '{{request.object.spec.selector}}',
                         matchLabelKeys: ['pod-template-hash', 'controller-revision-hash'],
                       },
-                      {
-                        maxSkew: 1,
-                        topologyKey: 'node.sdp.aws/capacity-partition',
-                        whenUnsatisfiable: 'ScheduleAnyway',
-                        labelSelector: '{{request.object.spec.selector}}',
-                        matchLabelKeys: ['pod-template-hash', 'controller-revision-hash'],
-                      },
+                      // {
+                      //   maxSkew: 1,
+                      //   topologyKey: 'node.sdp.aws/capacity-partition',
+                      //   whenUnsatisfiable: 'ScheduleAnyway',
+                      //   labelSelector: '{{request.object.spec.selector}}',
+                      //   matchLabelKeys: ['pod-template-hash', 'controller-revision-hash'],
+                      // },
                     ],
                   },
                 },
@@ -1744,7 +1749,7 @@ new k8s.apiextensions.CustomResource(
           },
           exclude: {
             resources: {
-              names: ['moodle'],
+              names: ['moodle', 'moodle-cache', 'shlink-cache'],
             },
           },
           generate: {
@@ -2278,9 +2283,9 @@ const thanosBucket = new aws.s3.BucketV2(thanosBucketName, {
   bucketPrefix: `${thanosBucketName}-`,
 })
 const thanosUser = new aws.iam.User(nm('thanos-user'))
-const thanosAccessKey = new aws.iam.AccessKey(nm('thanos-access-key'), {
-  user: thanosUser.name,
-})
+// const thanosAccessKey = new aws.iam.AccessKey(nm('thanos-access-key'), {
+//   user: thanosUser.name,
+// })
 const thanosS3AccessPolicy = new aws.iam.Policy(nm('thanos-policy'), {
   policy: thanosBucket.arn.apply((bucket) =>
     aws.iam
