@@ -249,7 +249,7 @@ new eks.ManagedNodeGroup(spotNodeGroupName, {
   nodeGroupName: spotNodeGroupName,
   capacityType: 'SPOT',
   // NOTE: t4g instances has larger Pod limit than non-burstable instances
-  instanceTypes: ['t4g.large', 't3.large'],
+  instanceTypes: ['t4g.large'],
   scalingConfig: {
     minSize: 2,
     maxSize: 2,
