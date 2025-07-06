@@ -1307,7 +1307,17 @@ const vpa = new k8s.helm.v3.Release(
     maxHistory: 1,
     values: {
       recommender: {
-        extraArgs: ['--oom-bump-up-ratio=2.0', '--oom-min-bump-up-bytes=524288000'],
+        extraArgs: [
+          '--kube-api-burst=100',
+          '--kube-api-qps=50',
+          '--oom-bump-up-ratio=2',
+          '--oom-min-bump-up-bytes=524288000',
+        ],
+      },
+      admissionController: {
+        certManager: {
+          enabled: true,
+        },
       },
     },
   },
@@ -2995,14 +3005,6 @@ function registerHelmRelease(release: k8s.helm.v3.Release, project: string) {
             automated: {
               selfHeal: true,
               prune: true,
-            },
-            retry: {
-              limit: 10,
-              backoff: {
-                duration: '5s',
-                factor: 2,
-                maxDuration: '5m',
-              },
             },
             syncOptions: ['PruneLast=true', 'ApplyOutOfSyncOnly=true', 'ServerSideApply=true'],
           },
